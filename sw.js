@@ -1,6 +1,6 @@
 /* Perch service worker — offline app shell.
    Bumps: change CACHE on every release so clients pick up new files. */
-const CACHE = 'perch-v4';
+const CACHE = 'perch-v5';
 
 const SHELL = [
   './',
@@ -8,6 +8,7 @@ const SHELL = [
   './css/styles.css',
   './js/app.js',
   './js/compass3d.js',
+  './js/fx.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

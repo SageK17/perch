@@ -140,6 +140,7 @@ const el = {
   btnRandom: $('#btn-random'),
   btnAR: $('#btn-ar'),
   btnShop: $('#btn-shop'),
+  btnRefresh: $('#btn-refresh'),
   filters: $('.view-compass .filters'),
   // shop
   dlgShop: $('#dlg-shop'), shopGrid: $('#shop-grid'), shopClose: $('#shop-close'),
@@ -324,6 +325,7 @@ async function loadSeats(lat, lon, { force = false } = {}) {
     if (moved < REFETCH_MOVE_M) return;
   }
   state.fetching = true;
+  el.body.classList.add('searching');
   const reqType = state.prefs.placeType;
   showBanner(`Looking for ${placeNoun()}s nearby…`, 'info');
   try {
@@ -348,8 +350,18 @@ async function loadSeats(lat, lon, { force = false } = {}) {
     }
   } finally {
     state.fetching = false;
+    el.body.classList.remove('searching');
     if (state._pending) { const p = state._pending; state._pending = null; loadSeats(p.lat, p.lon, { force: true }); }
   }
+}
+
+// Re-run the search for the current area (the refresh button).
+function refreshSearch() {
+  if (!state.user) { openLocationDialog('Pick a location to search around.'); return; }
+  if (state.fetching) return;
+  state.lastFetchCentre = null;
+  toast(`Searching this area…`);
+  loadSeats(state.user.lat, state.user.lon, { force: true });
 }
 
 /* ============================================================
@@ -435,6 +447,23 @@ function render() {
   if (state.arOpen) updateAR();
 }
 
+let countTargetId = null, countRaf = 0;
+function setDistanceDisplay(d, animate) {
+  const render = (numStr) => { el.distance.innerHTML = `<span class="num">${numStr}</span><span class="unit">${d.unit}</span>`; };
+  if (!animate || prefersReducedMotion) { render(d.num); return; }
+  cancelAnimationFrame(countRaf);
+  const end = parseFloat(d.num) || 0;
+  const isInt = String(d.num).indexOf('.') < 0;
+  const t0 = performance.now(), dur = 650;
+  const step = (t) => {
+    const k = Math.min(1, (t - t0) / dur);
+    const v = end * (1 - Math.pow(1 - k, 3));   // easeOutCubic
+    render(isInt ? String(Math.round(v)) : v.toFixed(1));
+    if (k < 1) countRaf = requestAnimationFrame(step); else render(d.num);
+  };
+  countRaf = requestAnimationFrame(step);
+}
+
 function updateCompass() {
   const target = currentTarget();
   if (!target) {
@@ -451,7 +480,9 @@ function updateCompass() {
   el.compassLive.hidden = false;
 
   const d = fmtDistance(target.dist);
-  el.distance.innerHTML = `<span class="num">${d.num}</span><span class="unit">${d.unit}</span>`;
+  const animate = target.id !== countTargetId;   // count-up only when the target changes
+  countTargetId = target.id;
+  setDistanceDisplay(d, animate);
   el.desc.textContent = target.desc;
 
   // Arrival?
@@ -460,7 +491,7 @@ function updateCompass() {
     state.arrived = arrived;
     el.body.classList.toggle('arrived', arrived);
     if (window.Compass3D) window.Compass3D.setArrival(arrived);
-    if (arrived) { vibrate([60, 40, 60]); el.desc.textContent = "You're here — " + target.desc; }
+    if (arrived) { vibrate([60, 40, 60]); el.desc.textContent = "You're here — " + target.desc; if (window.FX) window.FX.confettiBurst(); }
   }
   if (arrived) return;
 
@@ -856,6 +887,7 @@ function surpriseReveal(list, pick) {
     const d = fmtDistance(pick.dist);
     el.revealSub.textContent = `${d.num} ${d.unit} away`;
     vibrate([40, 30, 90]);
+    if (window.FX) window.FX.confettiBurst();
     setTimeout(() => { overlay.hidden = true; landSurprise(pick); }, 1500);
   };
   const iv = setInterval(() => {
@@ -1102,6 +1134,7 @@ function wire() {
 
   el.home.addEventListener('click', () => { el.body.dataset.view = 'splash'; el.app.hidden = true; });
   el.locLabel.addEventListener('click', () => openLocationDialog(''));
+  el.btnRefresh.addEventListener('click', refreshSearch);
 
   // Bottom nav + filter chips
   el.navbtns.forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -1212,5 +1245,6 @@ function registerSW() {
 loadPrefs();
 wire();
 registerSW();
+if (window.FX) { try { window.FX.initBackground(document.getElementById('fx-bg')); window.FX.initBurst(document.getElementById('fx-burst')); } catch (e) {} }
 // Expose a tiny hook for manual testing without GPS (used by the dev harness only).
 window.__perchSetLocation = (lat, lon, label) => { enterApp(); pickManualLocation(lat, lon, label || 'Test location'); };

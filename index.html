@@ -27,6 +27,10 @@
 
 <a class="skip-link" href="#main">Skip to content</a>
 
+<!-- Cinematic effects layers -->
+<canvas id="fx-bg" aria-hidden="true"></canvas>
+<canvas id="fx-burst" aria-hidden="true"></canvas>
+
 <!-- Reusable SVG symbols ---------------------------------------------------->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <defs>
@@ -87,6 +91,7 @@
     <symbol id="i-play" viewBox="0 0 24 24"><path d="M12 3a6 7 0 016 7.5c0 4-3 6-6 6s-6-2-6-6A6 7 0 0112 3z" fill="currentColor"/><path d="M12 16.5v3.5M10.5 21h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
     <symbol id="i-museum" viewBox="0 0 24 24"><path d="M3 9l9-5 9 5M5 10v7M9 10v7M15 10v7M19 10v7M3 20h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-9.4A3.4 3.4 0 0112 8a3.4 3.4 0 017 2.6C19 15.6 12 20 12 20z" fill="currentColor"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.1 5.9M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
 
@@ -126,6 +131,7 @@
       <span id="loc-text">Locating…</span>
       <svg class="ic" width="16" height="16"><use href="#i-caret"/></svg>
     </button>
+    <button id="btn-refresh" class="iconbtn" type="button" aria-label="Search this area again"><svg class="ic" width="22" height="22"><use href="#i-refresh"/></svg></button>
     <button id="btn-shop" class="iconbtn" type="button" aria-label="Compass shop"><svg class="ic" width="22" height="22"><use href="#i-cart"/></svg></button>
     <button id="btn-settings" class="iconbtn" type="button" aria-label="Settings"><svg class="ic" width="22" height="22"><use href="#i-gear"/></svg></button>
   </header>
@@ -149,6 +155,7 @@
     <div id="compass-live" class="compass-stage" hidden>
       <div class="compass-scene">
         <div class="compass-ring">
+          <div class="radar" aria-hidden="true"><span class="radar-sweep"></span><span class="radar-ping"></span><span class="radar-ping"></span></div>
           <div class="compass-rose" aria-hidden="true">
             <div class="ring-ticks"></div>
             <span class="ring-card ring-n">N</span>
@@ -358,6 +365,7 @@
 <script src="https://unpkg.com/three@0.149.0/build/three.min.js"></script>
 <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="js/compass3d.js"></script>
+<script src="js/fx.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,19 @@
+# Netlify config — Perch is a static site (no build step).
+# The repo root IS the site, so publish from "." with no build command.
+# Connect this repo in the Netlify UI (or `netlify deploy --prod --dir=.`) and it just works.
+# This also makes the site ready for Netlify Functions later (free tier) — the path to
+# real per-buyer Perch Plus licensing (see specs/A4-perch-licensing.md).
+
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"

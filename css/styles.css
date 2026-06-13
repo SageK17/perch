@@ -37,10 +37,14 @@ body {
   font-size: calc(17px * var(--font-scale));
   line-height: 1.45;
   color: var(--ink);
-  background: var(--bg);
+  background: radial-gradient(125% 95% at 50% 22%, #f3f9f6 0%, #e3eee8 52%, #cfe0d8 100%) fixed;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: none;
 }
+
+/* Cinematic FX canvases */
+#fx-bg { position: fixed; inset: 0; z-index: -1; pointer-events: none; width: 100%; height: 100%; }
+#fx-burst { position: fixed; inset: 0; z-index: 200; pointer-events: none; width: 100%; height: 100%; }
 
 body.bigtext { --font-scale: 1.18; --muted: #354039; --line: #c2c8c3; --glass: rgba(255,255,255,.92); }
 
@@ -82,7 +86,7 @@ a { color: var(--green-dark); }
   position: relative; min-height: 100svh; display: grid; place-items: center; overflow: hidden;
   padding: calc(28px + var(--safe-top)) 22px calc(28px + var(--safe-bottom));
   text-align: center;
-  background: linear-gradient(180deg, #f4f9f7 0%, #e6efeb 55%, #dde9e4 100%);
+  background: transparent;
 }
 body[data-view="splash"] .app { display: none; }
 body:not([data-view="splash"]) .splash { display: none; }
@@ -126,8 +130,7 @@ body:not([data-view="splash"]) .splash { display: none; }
 /* ============================================================
    APP SHELL
    ============================================================ */
-.app { min-height: 100svh; display: flex; flex-direction: column;
-  background: radial-gradient(120% 60% at 50% -5%, #f3f8f6 0%, var(--bg) 55%); }
+.app { min-height: 100svh; display: flex; flex-direction: column; background: transparent; }
 
 .topbar {
   display: flex; align-items: center; gap: 8px; padding: calc(8px + var(--safe-top)) 10px 8px;
@@ -400,11 +403,53 @@ body:not([data-place="food"]) #btn-dinner { display: none; }
 #d-spin { width: 100%; }
 
 /* ============================================================
+   CINEMATIC FX
+   ============================================================ */
+/* glow halo behind the compass */
+.compass-scene { position: relative; }
+.compass-scene::before {
+  content: ''; position: absolute; inset: -14%; border-radius: 50%; z-index: -1;
+  background: radial-gradient(circle, rgba(50,169,143,.32), transparent 62%);
+  filter: blur(20px); animation: halo 4.5s ease-in-out infinite;
+}
+@keyframes halo { 0%,100% { opacity: .55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.07); } }
+body.arrived .compass-scene::before { background: radial-gradient(circle, rgba(232,146,74,.36), transparent 62%); }
+
+/* radar scan while searching */
+.radar { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .3s; z-index: 4; }
+body.searching .radar { opacity: 1; }
+.radar-sweep { position: absolute; inset: 0; border-radius: 50%; transform-origin: 50% 50%;
+  background: conic-gradient(from 0deg, rgba(50,169,143,0) 0deg, rgba(50,169,143,.40) 42deg, rgba(50,169,143,0) 74deg);
+  animation: sweep 1.4s linear infinite; }
+@keyframes sweep { to { transform: rotate(360deg); } }
+.radar-ping { position: absolute; inset: 8%; border-radius: 50%; border: 2px solid rgba(50,169,143,.5);
+  opacity: 0; transform: scale(.12); animation: ping 1.9s ease-out infinite; }
+.radar-ping:nth-child(3) { animation-delay: .95s; }
+@keyframes ping { 0% { transform: scale(.12); opacity: .7; } 100% { transform: scale(1); opacity: 0; } }
+
+/* refresh button spins while searching */
+body.searching #btn-refresh .ic { animation: spin 1s linear infinite; transform-origin: 50% 50%; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* view entrance transitions */
+body[data-app-view="compass"] #view-compass,
+body[data-app-view="list"] #view-list { animation: viewIn .34s cubic-bezier(.2,.8,.2,1); }
+body[data-app-view="map"] #view-map { animation: fadeIn .34s ease; }
+@keyframes viewIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* splash entrance */
+.splash-inner { animation: introScale .8s both cubic-bezier(.2,.8,.2,1); }
+@keyframes introScale { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
+
+/* ============================================================
    MOTION / WIDE SCREENS
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   .arrow, .btn, .seat-card { transition: none; }
-  .aurora span, .logo-mark, .loc-dot, .compass-scene, .ar-marker .ar-arrow { animation: none !important; }
+  .aurora span, .logo-mark, .loc-dot, .compass-scene, .compass-scene::before, .radar-sweep,
+  .radar-ping, .splash-inner, .ar-marker .ar-arrow, .view { animation: none !important; }
+  body.searching #btn-refresh .ic { animation: none !important; }
   .btn-xl::after { display: none; }
 }
 
