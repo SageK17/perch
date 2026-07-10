@@ -197,6 +197,66 @@ def cmd_sync(args) -> int:
     return 0
 
 
+def _iter_sample_files(path: str):
+    if os.path.isdir(path):
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                yield os.path.join(root, name)
+    else:
+        yield path
+
+
+def cmd_dict_train(args) -> int:
+    vault = _open(args)
+    samples = []
+    if args.paths:
+        for p in args.paths:
+            for f in _iter_sample_files(p):
+                try:
+                    with open(f, "rb") as fh:
+                        samples.append(fh.read())
+                except OSError:
+                    pass
+        src = f"{len(samples)} sample file(s)"
+    else:
+        samples = vault.sample_chunk_plaintexts()
+        src = f"{len(samples)} existing chunk(s)"
+    info = vault.train_dictionary(samples)
+    print(f"Trained shared dictionary {info['id']} ({fmt_size(info['size'])}) from {src}.")
+    print("New writes will use it automatically.")
+    if args.recompress:
+        r = vault.recompress_all()
+        saved = r["before"] - r["after"]
+        print(f"Recompressed {r['chunks']} chunk(s): {fmt_size(r['before'])} -> "
+              f"{fmt_size(r['after'])} stored ({fmt_size(saved)} saved).")
+    return 0
+
+
+def cmd_dict_show(args) -> int:
+    vault = _open(args)
+    did = vault.manifest.active_dict
+    if not did:
+        print("No shared dictionary set. Train one with `starling dict train`.")
+        return 0
+    users = sum(1 for c in vault.manifest.chunks.values() if c.get("dict") == did)
+    size = len(vault.manifest.dictionaries.get(did, b""))
+    print(f"Active dictionary : {did} ({fmt_size(size)})")
+    print(f"Chunks using it   : {users}/{len(vault.manifest.chunks)}")
+    print(f"Dictionaries kept : {len(vault.manifest.dictionaries)}")
+    return 0
+
+
+def cmd_optimize(args) -> int:
+    vault = _open(args)
+    r = vault.recompress_all()
+    saved = r["before"] - r["after"]
+    pct = (saved / r["before"] * 100) if r["before"] else 0
+    print(f"Recompressed {r['chunks']} chunk(s) with the best available codec.")
+    print(f"Stored: {fmt_size(r['before'])} -> {fmt_size(r['after'])} "
+          f"({fmt_size(saved)} saved, {pct:.1f}%).")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     vault = _open(args)
     vault._healthy_ids(refresh=True)
@@ -268,6 +328,20 @@ def build_parser() -> argparse.ArgumentParser:
     q = sub.add_parser("dashboard", help="write a static HTML status page")
     q.add_argument("-o", "--out", default="starling-dashboard.html")
     q.set_defaults(func=cmd_dashboard)
+
+    q = sub.add_parser("optimize", help="recompress stored data with the best codec")
+    q.set_defaults(func=cmd_optimize)
+
+    dic = sub.add_parser("dict", help="manage the shared compression dictionary")
+    dsub = dic.add_subparsers(dest="dcmd", required=True)
+    dt = dsub.add_parser("train", help="build a shared dictionary to shrink similar files")
+    dt.add_argument("paths", nargs="*",
+                    help="sample files/dirs to learn from (default: existing vault data)")
+    dt.add_argument("--recompress", action="store_true",
+                    help="also re-encode existing chunks with the new dictionary")
+    dt.set_defaults(func=cmd_dict_train)
+    ds = dsub.add_parser("show", help="show the active dictionary")
+    ds.set_defaults(func=cmd_dict_show)
 
     return p
 

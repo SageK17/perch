@@ -36,6 +36,7 @@ disappearing — or deleting your account — doesn't lose your data.
 | Survives providers going down | Replication or Reed–Solomon erasure coding, one shard per provider |
 | Survives *account loss* | The encrypted manifest is mirrored to the providers; passphrase + providers = full recovery |
 | Doesn't store the same bytes twice | Content-defined (FastCDC) chunking + content addressing |
+| Shrinks the data | Per-chunk best-of compression (zlib / LZMA) + an optional shared vault dictionary for lots of small similar files |
 | Self-healing | `fsck --repair` rebuilds missing copies/shards onto healthy providers |
 | No lock-in, no dependencies | Pure Python standard library (uses `cryptography` for AES if present, falls back to a stdlib cipher otherwise) |
 
@@ -75,6 +76,10 @@ python3 -m starling df                 # pooled capacity, dedup + redundancy sta
 python3 -m starling fsck --repair      # verify and self-heal redundancy
 python3 -m starling sync push          # back the encrypted index up to providers
 python3 -m starling dashboard -o status.html
+
+# 5. Shrink the data further.
+python3 -m starling dict train ~/samples/   # learn a shared dictionary (or omit path to learn from the vault)
+python3 -m starling optimize                # recompress everything with the best codec
 ```
 
 See the whole thing run — pool 8 accounts, kill 2, recover, self-heal:
@@ -101,6 +106,29 @@ file ─▶ chunk ─▶ dedup ─▶ compress ─▶ encrypt ─▶ ┬─ repl
 ```
 
 Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Shrinking the data
+
+Beyond deduplication, each new chunk is compressed with a **best-of codec**:
+Starling tries zlib and LZMA (and a shared dictionary, if trained) and keeps
+whichever is smallest — already-compressed data (JPEG/MP4/ZIP) simply falls
+through to raw rather than wasting space.
+
+For **lots of small, similar files** (logs, JSON records, templated documents),
+train a **shared dictionary**: one vault-wide codebook of common blocks that
+every chunk can reference instead of each carrying its own copy.
+
+```bash
+python3 -m starling dict train ./my-json-records/   # or no path: learn from the vault
+python3 -m starling dict show
+python3 -m starling optimize                         # recompress existing data
+python3 examples/benchmark.py                        # honest before/after on a sample corpus
+```
+
+Honest limits: compression only shrinks data that has structure. Text, logs,
+code, documents, and similar files win; already-compressed media and random
+bytes don't (that's the entropy floor, not a tuning knob). Dictionaries are
+content-addressed and never mutated, so retraining never breaks old chunks.
 
 ## Replication vs. erasure coding
 

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import reedsolomon
+from . import compression, reedsolomon
 from .backends import Backend, BlobNotFound, build_backend
 from .crypto import KeyRing, derive_master_key
 from .manifest import MANIFEST_BACKUP_HASH, Manifest
@@ -38,7 +38,6 @@ from .placement import NotEnoughProviders, Policy, choose_providers
 CONFIG_NAME = "config.json"
 MANIFEST_NAME = "manifest.enc"
 CONFIG_VERSION = 1
-_COMPRESS_KEEP = 0.95  # only keep compression if it saves at least 5%
 
 
 class VaultError(RuntimeError):
@@ -149,11 +148,7 @@ class Vault:
             self.manifest.incref(ph_hex)
             return ph_hex
 
-        compressed = zlib.compress(plaintext, 6)
-        if len(compressed) < len(plaintext) * _COMPRESS_KEEP:
-            payload, is_compressed = compressed, True
-        else:
-            payload, is_compressed = plaintext, False
+        payload, tag, dict_id = self._compress_best(plaintext)
         blob = self.keyring.encrypt(payload)
 
         backends = list(self.backends.values())
@@ -162,10 +157,12 @@ class Vault:
 
         record: dict = {
             "size": len(plaintext),
-            "compressed": is_compressed,
+            "c": tag,
             "mode": self.policy.mode,
             "refcount": 1,
         }
+        if dict_id:
+            record["dict"] = dict_id
         if self.policy.mode == "replicate":
             skey = self.keyring.storage_key(ph, 0)
             for pid in chosen:
@@ -231,7 +228,7 @@ class Vault:
             blob = reedsolomon.decode(slots, k, m, er["enc_len"])
 
         payload = self.keyring.decrypt(blob)
-        plaintext = zlib.decompress(payload) if rec["compressed"] else payload
+        plaintext = self._decompress_payload(payload, rec)
         if hashlib.sha256(plaintext).hexdigest() != ph_hex:
             raise VaultError(f"integrity check failed for chunk {ph_hex[:12]}")
         return plaintext
@@ -245,6 +242,85 @@ class Vault:
             for pid, skey, _ in rec["erasure"]["shards"]:
                 if pid in self.backends:
                     self.backends[pid].delete(skey)
+
+    # ----------------------------------------------------------- compression
+    def _compress_best(self, plaintext: bytes):
+        """Pick the smallest codec for this chunk; returns (payload, tag, dict_id)."""
+        zdict = None
+        if self.manifest.active_dict:
+            zdict = self.manifest.dictionaries.get(self.manifest.active_dict)
+        payload, tag = compression.best(plaintext, zdict=zdict)
+        return payload, tag, (self.manifest.active_dict if tag == "zdict" else None)
+
+    def _decompress_payload(self, payload: bytes, rec: dict) -> bytes:
+        if "c" in rec:
+            zdict = None
+            if rec.get("dict"):
+                zdict = self.manifest.dictionaries.get(rec["dict"])
+                if zdict is None:
+                    raise VaultError(f"missing dictionary {rec['dict']} for a chunk")
+            return compression.decompress(payload, rec["c"], zdict=zdict)
+        # legacy records used a boolean 'compressed' flag (zlib or raw)
+        import zlib as _zlib
+        return _zlib.decompress(payload) if rec.get("compressed") else payload
+
+    def train_dictionary(self, samples, max_size: int = compression.MAX_DICT) -> dict:
+        """Learn a shared dictionary; new writes (and any recompress) use it."""
+        d = compression.build_dictionary(samples, max_size=max_size)
+        if not d:
+            raise VaultError("no sample data to train a dictionary from")
+        did = hashlib.sha256(d).hexdigest()[:16]
+        self.manifest.dictionaries[did] = d
+        self.manifest.active_dict = did
+        self._save_manifest()
+        return {"id": did, "size": len(d)}
+
+    def sample_chunk_plaintexts(self, limit: int = 400) -> List[bytes]:
+        out: List[bytes] = []
+        for ph_hex in list(self.manifest.chunks)[:limit]:
+            try:
+                out.append(self._read_chunk(ph_hex))
+            except VaultError:
+                pass
+        return out
+
+    def _recompress_chunk(self, ph_hex: str, rec: dict) -> None:
+        """Re-encode an existing chunk with the current best codec, in place."""
+        plaintext = self._read_chunk(ph_hex)
+        payload, tag, dict_id = self._compress_best(plaintext)
+        blob = self.keyring.encrypt(payload)
+        if rec["mode"] == "replicate":
+            for pid, skey in rec["replicas"]:
+                if pid in self.backends:
+                    self.backends[pid].put(skey, blob)
+            rec["stored"] = len(blob) * len(rec["replicas"])
+        else:
+            er = rec["erasure"]
+            k, m = er["k"], er["m"]
+            shards = reedsolomon.encode(blob, k, m)
+            new = []
+            for i, (pid, skey, _h) in enumerate(er["shards"]):
+                if pid in self.backends:
+                    self.backends[pid].put(skey, shards[i])
+                new.append([pid, skey, hashlib.sha256(shards[i]).hexdigest()])
+            er["shards"] = new
+            er["enc_len"] = len(blob)
+            rec["stored"] = sum(len(s) for s in shards)
+        rec["c"] = tag
+        if dict_id:
+            rec["dict"] = dict_id
+        else:
+            rec.pop("dict", None)
+
+    def recompress_all(self) -> dict:
+        """Re-encode every stored chunk with the current best codec/dictionary."""
+        before = self.manifest.stored_bytes()
+        n = 0
+        for ph_hex in list(self.manifest.chunks):
+            self._recompress_chunk(ph_hex, self.manifest.chunks[ph_hex])
+            n += 1
+        self._save_manifest()
+        return {"chunks": n, "before": before, "after": self.manifest.stored_bytes()}
 
     # ----------------------------------------------------------------- files
     def put_bytes(self, data: bytes, vault_path: str) -> PutResult:

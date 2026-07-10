@@ -33,9 +33,16 @@ Backends│  base.Backend   local · memory · s3 · webdav  │
    `SHA-256(plaintext)`. If the manifest already has that hash, we just bump a
    reference count and move on — nothing is re-uploaded.
 
-3. **Compress** (`engine.py`). New chunks are zlib-compressed; if that doesn't
-   save at least 5%, the raw bytes are kept (a flag in the manifest records
-   which).
+3. **Compress** (`compression.py`). Each new chunk is run through a *best-of*
+   codec: zlib, LZMA, and — if a shared dictionary has been trained — zlib primed
+   with that dictionary. The smallest result wins, and a tag in the manifest
+   records which codec was used so reads can reverse it. If nothing beats the raw
+   bytes (already-compressed or random data), the chunk is stored as-is. A
+   shared dictionary is a vault-wide codebook of common blocks, letting many
+   small similar files reference shared structure instead of each carrying a
+   copy; dictionaries are content-addressed and immutable, so retraining never
+   breaks chunks written against an older one. `starling optimize` /
+   `dict train --recompress` re-encode existing chunks in place.
 
 4. **Encrypt** (`crypto.py`). The payload is sealed with AES-256-GCM under a key
    derived from your passphrase. Output is `alg-byte ‖ nonce ‖ ciphertext‖tag`.

@@ -18,6 +18,7 @@ ciphertext.
 
 from __future__ import annotations
 
+import base64
 import json
 import zlib
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -37,6 +38,9 @@ class Manifest:
         self.files: Dict[str, dict] = {}
         # ph_hex -> chunk record (see engine for the exact shape written)
         self.chunks: Dict[str, dict] = {}
+        # dictionary id -> raw dictionary bytes; and the id new writes use
+        self.dictionaries: Dict[str, bytes] = {}
+        self.active_dict: Optional[str] = None
 
     # -- files ----------------------------------------------------------------
     def set_file(self, path: str, record: dict) -> None:
@@ -94,13 +98,29 @@ class Manifest:
 
     # -- serialisation --------------------------------------------------------
     def _to_obj(self) -> dict:
-        return {"version": MANIFEST_VERSION, "files": self.files, "chunks": self.chunks}
+        return {
+            "version": MANIFEST_VERSION,
+            "files": self.files,
+            "chunks": self.chunks,
+            # Shared compression dictionaries live here so they are encrypted at
+            # rest and recovered by `sync` along with everything else. Keyed by a
+            # content id; never mutated, so chunks compressed against an old one
+            # stay decodable after a retrain.
+            "dictionaries": {
+                k: base64.b64encode(v).decode("ascii") for k, v in self.dictionaries.items()
+            },
+            "active_dict": self.active_dict,
+        }
 
     @classmethod
     def _from_obj(cls, obj: dict) -> "Manifest":
         man = cls()
         man.files = obj.get("files", {})
         man.chunks = obj.get("chunks", {})
+        man.dictionaries = {
+            k: base64.b64decode(v) for k, v in obj.get("dictionaries", {}).items()
+        }
+        man.active_dict = obj.get("active_dict")
         return man
 
     def serialize(self, keyring: KeyRing) -> bytes:

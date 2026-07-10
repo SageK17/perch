@@ -18,7 +18,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from starling import Policy, Vault, VaultError  # noqa: E402
-from starling import crypto, reedsolomon  # noqa: E402
+from starling import compression, crypto, reedsolomon  # noqa: E402
 from starling.chunker import chunk_bytes  # noqa: E402
 
 PW = "correct horse battery staple"
@@ -238,6 +238,89 @@ def test_manifest_recovery_via_sync():
         assert v2.ls() == [], "expected an empty manifest before recovery"
         assert v2.sync_pull() is True
         assert v2.get_bytes("important.bin") == data, "could not recover from provider backup"
+
+
+# --------------------------------------------------------------------------- #
+# data compression: best-of codec + shared dictionary
+# --------------------------------------------------------------------------- #
+def _similar_corpus(n=40, template_len=1200, tail_len=120, seed=100):
+    """n files that share a common (incompressible-on-its-own) template plus a
+    small unique tail each -- similar, but not duplicates (so no dedup)."""
+    rng = random.Random(seed)
+    template = bytes(rng.getrandbits(8) for _ in range(template_len))
+    files = [template + bytes(rng.getrandbits(8) for _ in range(tail_len)) for _ in range(n)]
+    return template, files
+
+
+def test_compression_best_of_roundtrip():
+    text = b"the quick brown fox jumps over the lazy dog. " * 200
+    payload, tag = compression.best(text)
+    assert tag in ("zlib", "lzma")
+    assert len(payload) < len(text) * 0.5
+    assert compression.decompress(payload, tag) == text
+    # random data can't be compressed -> falls through to raw, never larger
+    rnd = os.urandom(4000)
+    p2, t2 = compression.best(rnd)
+    assert t2 == "raw"
+    assert compression.decompress(p2, t2) == rnd
+    # dictionary path round-trips
+    zdict = compression.build_dictionary([text, text])
+    p3, t3 = compression.best(text, zdict=zdict)
+    assert compression.decompress(p3, t3, zdict=zdict) == text
+
+
+def _stored_for(tmp, files, with_dict):
+    provs = _local_providers(tmp, 2)
+    v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1), providers=provs)
+    if with_dict:
+        v.train_dictionary(files)
+    for i, data in enumerate(files):
+        v.put_bytes(data, f"f{i}.bin")
+    # sanity: everything reads back
+    for i, data in enumerate(files):
+        assert v.get_bytes(f"f{i}.bin") == data
+    return v.stats()["stored_bytes"]
+
+
+def test_shared_dictionary_shrinks_similar_files():
+    _, files = _similar_corpus()
+    with tempfile.TemporaryDirectory() as t1:
+        baseline = _stored_for(t1, files, with_dict=False)
+    with tempfile.TemporaryDirectory() as t2:
+        withdict = _stored_for(t2, files, with_dict=True)
+    # The shared template should be paid for ~once, not once per file.
+    assert withdict < baseline * 0.6, f"dict {withdict} vs baseline {baseline}"
+
+
+def test_optimize_recompresses_existing_data():
+    _, files = _similar_corpus()
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 2))
+        for i, data in enumerate(files):
+            v.put_bytes(data, f"f{i}.bin")
+        # train from what's already stored, then recompress in place
+        v.train_dictionary(v.sample_chunk_plaintexts())
+        r = v.recompress_all()
+        assert r["after"] < r["before"] * 0.6
+        # data is intact after the rewrite
+        for i, data in enumerate(files):
+            assert v.get_bytes(f"f{i}.bin") == data
+
+
+def test_retrain_keeps_old_chunks_readable():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 2))
+        _, corpus_a = _similar_corpus(seed=1)
+        _, corpus_b = _similar_corpus(seed=2)
+        v.train_dictionary(corpus_a)
+        v.put_bytes(corpus_a[0], "a.bin")           # written against dictionary A
+        v.train_dictionary(corpus_b)                # new active dictionary B
+        v.put_bytes(corpus_b[0], "b.bin")           # written against dictionary B
+        # both dictionaries are retained, so both files still decode
+        assert v.get_bytes("a.bin") == corpus_a[0]
+        assert v.get_bytes("b.bin") == corpus_b[0]
 
 
 # --------------------------------------------------------------------------- #
