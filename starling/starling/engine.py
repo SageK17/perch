@@ -415,14 +415,21 @@ class Vault:
         old = self.manifest.get_file(vault_path)
         chunk_hexes: List[str] = []
         new_chunks = dedup_bytes = 0
-        for chunk in chunk_bytes(data):
-            existed = self.manifest.has_chunk(hashlib.sha256(chunk.data).hexdigest())
-            ph_hex = self._store_chunk(chunk.data)
-            chunk_hexes.append(ph_hex)
-            if existed:
-                dedup_bytes += len(chunk.data)
-            else:
-                new_chunks += 1
+        try:
+            for chunk in chunk_bytes(data):
+                existed = self.manifest.has_chunk(hashlib.sha256(chunk.data).hexdigest())
+                ph_hex = self._store_chunk(chunk.data)
+                chunk_hexes.append(ph_hex)
+                if existed:
+                    dedup_bytes += len(chunk.data)
+                else:
+                    new_chunks += 1
+        except Exception:
+            # A provider failing mid-upload must not leak storage or corrupt
+            # reference counts: undo the increfs / drop the new chunks we made.
+            self._release_chunks(chunk_hexes)
+            self._save_manifest()
+            raise
         self.manifest.set_file(
             vault_path,
             {
@@ -495,6 +502,78 @@ class Vault:
             {"path": p, "size": f["size"], "chunks": len(f["chunks"]), "mtime": f["mtime"]}
             for p, f in self.manifest.iter_files(prefix)
         ]
+
+    # --------------------------------------------------------------------- gc
+    def gc(self, prune_blobs: bool = False) -> dict:
+        """Recompute reference counts from the source of truth (files + delta
+        bases), drop any orphaned chunks, and optionally delete provider blobs the
+        manifest no longer references. Recovers space from interrupted uploads or
+        any reference-count drift.
+        """
+        counts = {ph: 0 for ph in self.manifest.chunks}
+        for f in self.manifest.files.values():
+            for ph in f["chunks"]:
+                if ph in counts:
+                    counts[ph] += 1
+        for rec in self.manifest.chunks.values():
+            base = rec.get("delta")
+            if base in counts:
+                counts[base] += 1
+
+        removed = freed = 0
+        changed = True
+        while changed:  # dropping a delta releases its base, so iterate to a fixpoint
+            changed = False
+            for ph in list(self.manifest.chunks):
+                rec = self.manifest.chunks.get(ph)
+                if rec is None or counts.get(ph, 0) > 0:
+                    continue
+                freed += rec.get("stored", 0)
+                base = rec.get("delta")
+                if base in counts:
+                    counts[base] -= 1
+                    brec = self.manifest.chunks.get(base)
+                    if brec:
+                        brec["basedeps"] = max(0, brec.get("basedeps", 1) - 1)
+                self._delete_chunk_blobs(rec)
+                self.manifest.drop_chunk(ph)
+                counts.pop(ph, None)
+                removed += 1
+                changed = True
+
+        for ph, rec in self.manifest.chunks.items():  # repair survivors' counts
+            rec["refcount"] = counts.get(ph, rec.get("refcount", 1))
+
+        pruned = self._prune_orphan_blobs() if prune_blobs else 0
+        self._save_manifest()
+        return {"removed": removed, "freed": freed, "pruned": pruned}
+
+    def _prune_orphan_blobs(self) -> int:
+        """Delete provider blobs whose keys no chunk references (e.g. a shard left
+        behind by an upload that failed after writing to some providers)."""
+        referenced: Dict[str, set] = {}
+        for rec in self.manifest.chunks.values():
+            if rec["mode"] == "replicate":
+                for pid, skey in rec["replicas"]:
+                    referenced.setdefault(pid, set()).add(skey)
+            else:
+                for pid, skey, _ in rec["erasure"]["shards"]:
+                    referenced.setdefault(pid, set()).add(skey)
+        backup_key = self.keyring.storage_key(
+            hashlib.sha256(MANIFEST_BACKUP_HASH).digest(), 0
+        )
+        pruned = 0
+        for pid, backend in self.backends.items():
+            keep = referenced.get(pid, set()) | {backup_key}
+            try:
+                keys = list(backend.list_keys())
+            except Exception:
+                continue
+            for k in keys:
+                if k not in keep:
+                    backend.delete(k)
+                    pruned += 1
+        return pruned
 
     # ------------------------------------------------------------------ stats
     def stats(self) -> dict:

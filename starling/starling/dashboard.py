@@ -14,10 +14,11 @@ from typing import Dict
 
 
 def _fmt_bytes(n: float) -> str:
+    # Decimal units, matching the CLI and how providers advertise capacity.
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if abs(n) < 1024 or unit == "PB":
+        if abs(n) < 1000 or unit == "PB":
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.2f} {unit}"
-        n /= 1024
+        n /= 1000
     return f"{n:.2f} PB"
 
 

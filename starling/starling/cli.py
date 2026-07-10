@@ -13,6 +13,7 @@ Command-line interface for Starling.
     starling sync          mirror the encrypted manifest to providers (push/pull)
     starling dashboard     write a self-contained HTML status page
     starling optimize      recompress data; --delta also diffs near-duplicates
+    starling gc            collect orphaned chunks; --prune stray provider blobs
     starling dict          train/show a shared compression dictionary
 
 The vault passphrase comes from $STARLING_PASSPHRASE, or is prompted for. It is
@@ -30,7 +31,7 @@ from typing import List, Optional
 from . import __version__
 from .dashboard import render as render_dashboard
 from .engine import Vault, VaultError
-from .placement import Policy
+from .placement import NotEnoughProviders, Policy
 
 _UNITS = {
     "": 1, "b": 1,
@@ -55,10 +56,12 @@ def parse_size(text: str) -> int:
 
 
 def fmt_size(n: float) -> str:
+    # Decimal units (1 GB = 10^9 B) to match parse_size and how providers
+    # advertise free tiers, so "--capacity 15GB" also displays as "15.00 GB".
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
-        if abs(n) < 1024 or unit == "PB":
+        if abs(n) < 1000 or unit == "PB":
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.2f} {unit}"
-        n /= 1024
+        n /= 1000
     return f"{n:.2f} PB"
 
 
@@ -281,6 +284,15 @@ def cmd_optimize(args) -> int:
     return 0
 
 
+def cmd_gc(args) -> int:
+    vault = _open(args)
+    r = vault.gc(prune_blobs=args.prune)
+    print(f"Collected {r['removed']} orphaned chunk(s), freed {fmt_size(r['freed'])}.")
+    if args.prune:
+        print(f"Pruned {r['pruned']} stray provider blob(s).")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     vault = _open(args)
     vault._healthy_ids(refresh=True)
@@ -369,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also delta-compress near-duplicate chunks (backups, versions)")
     q.set_defaults(func=cmd_optimize)
 
+    q = sub.add_parser("gc", help="collect orphaned chunks and repair reference counts")
+    q.add_argument("--prune", action="store_true",
+                   help="also delete provider blobs the manifest no longer references")
+    q.set_defaults(func=cmd_gc)
+
     dic = sub.add_parser("dict", help="manage the shared compression dictionary")
     dsub = dic.add_subparsers(dest="dcmd", required=True)
     dt = dsub.add_parser("train", help="build a shared dictionary to shrink similar files")
@@ -387,10 +404,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except VaultError as exc:
+    except (VaultError, NotEnoughProviders) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except FileNotFoundError as exc:
+    except OSError as exc:  # missing files, provider I/O, network
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

@@ -20,6 +20,8 @@ from __future__ import annotations
 import datetime
 import hashlib
 import hmac
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +31,7 @@ from xml.etree import ElementTree as ET
 from .base import Backend, BlobNotFound
 
 _TIMEOUT = 60
+_RETRIES = 4          # attempts for transient (5xx / network) failures
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
 
@@ -89,7 +92,28 @@ class S3Backend(Backend):
 
     def _send(self, method: str, key: str = "", query: Optional[Dict[str, str]] = None,
               body: bytes = b"") -> bytes:
-        now = datetime.datetime.utcnow()
+        """Sign and send, retrying transient failures (5xx, timeouts) with backoff.
+
+        Each attempt is re-signed with a fresh timestamp so a retry can't be
+        rejected for clock skew. 4xx (404, 403, ...) are not retried.
+        """
+        delay = 0.5
+        for attempt in range(_RETRIES):
+            try:
+                return self._send_once(method, key, query, body)
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500 or attempt == _RETRIES - 1:
+                    raise
+            except (urllib.error.URLError, socket.timeout, ConnectionError, TimeoutError):
+                if attempt == _RETRIES - 1:
+                    raise
+            time.sleep(delay)
+            delay *= 2
+        raise RuntimeError("unreachable")
+
+    def _send_once(self, method: str, key: str = "", query: Optional[Dict[str, str]] = None,
+                   body: bytes = b"") -> bytes:
+        now = datetime.datetime.now(datetime.timezone.utc)
         amzdate = now.strftime("%Y%m%dT%H%M%SZ")
         datestamp = now.strftime("%Y%m%d")
         payload_hash = hashlib.sha256(body).hexdigest() if body else _EMPTY_HASH

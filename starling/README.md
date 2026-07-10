@@ -77,6 +77,7 @@ python3 -m starling df                 # pooled capacity, dedup + redundancy sta
 
 # 4. Durability.
 python3 -m starling fsck --repair      # verify and self-heal redundancy
+python3 -m starling gc --prune         # collect orphans, reclaim stray blobs
 python3 -m starling sync push          # back the encrypted index up to providers
 python3 -m starling dashboard -o status.html
 

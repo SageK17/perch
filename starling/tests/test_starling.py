@@ -516,6 +516,92 @@ def test_s3_vault_end_to_end():
         srv.shutdown()
 
 
+class _FlakyLocal:
+    """Wraps a backend and raises after N successful puts (a provider dying)."""
+    def __init__(self, inner, fail_after):
+        self._inner, self._n, self._fail_after = inner, 0, fail_after
+        self.id, self.kind, self.capacity = inner.id, inner.kind, inner.capacity
+    def put(self, key, blob):
+        self._n += 1
+        if self._n > self._fail_after:
+            raise IOError("provider went away")
+        return self._inner.put(key, blob)
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_put_failure_rolls_back_no_orphans():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 1))
+        v.backends["p0"] = _FlakyLocal(v.backends["p0"], fail_after=4)
+        v._healthy = {"p0"}
+        try:
+            v.put_bytes(_blob(300_000, seed=3), "big.bin")
+            raise AssertionError("expected the put to fail")
+        except IOError:
+            pass
+        assert len(v.manifest.chunks) == 0, "failed put leaked orphan chunks"
+        assert len(v.manifest.files) == 0
+        # the vault is still usable afterwards
+        v.backends["p0"] = v.backends["p0"]._inner  # provider recovers
+        v.put_bytes(b"hello", "ok.bin")
+        assert v.get_bytes("ok.bin") == b"hello"
+
+
+def test_put_failure_does_not_inflate_shared_refcounts():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 1))
+        data = _blob(300_000, seed=5)
+        v.put_bytes(data, "a.bin")
+        chunks_after_a = dict(v.manifest.chunks)
+        refcounts = {ph: rec["refcount"] for ph, rec in chunks_after_a.items()}
+        # A second file that re-uses a.bin's chunks then fails partway.
+        v.backends["p0"] = _FlakyLocal(v.backends["p0"], fail_after=0)  # fail immediately
+        v._healthy = {"p0"}
+        try:
+            v.put_bytes(data + _blob(50_000, seed=6), "b.bin")
+        except IOError:
+            pass
+        # a.bin's shared chunks must have their original refcounts (not inflated).
+        for ph, rc in refcounts.items():
+            assert v.manifest.chunks[ph]["refcount"] == rc, "refcount inflated by failed put"
+        v.backends["p0"] = v.backends["p0"]._inner
+        assert v.get_bytes("a.bin") == data
+        assert v.rm("a.bin") and len(v.manifest.chunks) == 0, "chunks didn't GC after refcount repair"
+
+
+def test_gc_collects_orphans_and_repairs_counts():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 2))
+        v.put_bytes(_blob(200_000, seed=7), "keep.bin")
+        v.put_bytes(_blob(200_000, seed=8), "orphan-me.bin")
+        # Simulate a crash that lost a file record but not its chunks.
+        del v.manifest.files["orphan-me.bin"]
+        report = v.gc()
+        assert report["removed"] > 0 and report["freed"] > 0
+        assert v.get_bytes("keep.bin") == _blob(200_000, seed=7), "gc removed live data"
+        # every surviving chunk is referenced by the one remaining file
+        referenced = {ph for f in v.manifest.files.values() for ph in f["chunks"]}
+        assert set(v.manifest.chunks) == referenced
+
+
+def test_gc_prune_removes_stray_provider_blobs():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 1))
+        v.put_bytes(_blob(50_000, seed=9), "f.bin")
+        # A stray blob left behind by some earlier half-finished write.
+        v.backends["p0"].put("deadbeef" * 8, b"garbage not in the manifest")
+        used_before = v.backends["p0"].used_bytes()
+        report = v.gc(prune_blobs=True)
+        assert report["pruned"] == 1
+        assert v.backends["p0"].used_bytes() < used_before
+        assert v.get_bytes("f.bin") == _blob(50_000, seed=9)
+
+
 # --------------------------------------------------------------------------- #
 # runner
 # --------------------------------------------------------------------------- #
