@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import compression, reedsolomon
+from . import compression, delta, reedsolomon
 from .backends import Backend, BlobNotFound, build_backend
 from .crypto import KeyRing, derive_master_key
 from .manifest import MANIFEST_BACKUP_HASH, Manifest
@@ -228,7 +228,12 @@ class Vault:
             blob = reedsolomon.decode(slots, k, m, er["enc_len"])
 
         payload = self.keyring.decrypt(blob)
-        plaintext = self._decompress_payload(payload, rec)
+        if "delta" in rec:
+            # The blob is a patch; rebuild against the (always-whole) base chunk.
+            base_pt = self._read_chunk(rec["delta"])
+            plaintext = delta.apply_delta(base_pt, payload)
+        else:
+            plaintext = self._decompress_payload(payload, rec)
         if hashlib.sha256(plaintext).hexdigest() != ph_hex:
             raise VaultError(f"integrity check failed for chunk {ph_hex[:12]}")
         return plaintext
@@ -244,13 +249,35 @@ class Vault:
                     self.backends[pid].delete(skey)
 
     # ----------------------------------------------------------- compression
+    def _active_zdict(self) -> Optional[bytes]:
+        if self.manifest.active_dict:
+            return self.manifest.dictionaries.get(self.manifest.active_dict)
+        return None
+
     def _compress_best(self, plaintext: bytes):
         """Pick the smallest codec for this chunk; returns (payload, tag, dict_id)."""
-        zdict = None
-        if self.manifest.active_dict:
-            zdict = self.manifest.dictionaries.get(self.manifest.active_dict)
-        payload, tag = compression.best(plaintext, zdict=zdict)
+        payload, tag = compression.best(plaintext, zdict=self._active_zdict())
         return payload, tag, (self.manifest.active_dict if tag == "zdict" else None)
+
+    def _rewrite_blob_in_place(self, rec: dict, blob: bytes) -> None:
+        """Overwrite a chunk's stored blob at its existing locations (keys unchanged)."""
+        if rec["mode"] == "replicate":
+            for pid, skey in rec["replicas"]:
+                if pid in self.backends:
+                    self.backends[pid].put(skey, blob)
+            rec["stored"] = len(blob) * len(rec["replicas"])
+        else:
+            er = rec["erasure"]
+            k, m = er["k"], er["m"]
+            shards = reedsolomon.encode(blob, k, m)
+            new = []
+            for i, (pid, skey, _h) in enumerate(er["shards"]):
+                if pid in self.backends:
+                    self.backends[pid].put(skey, shards[i])
+                new.append([pid, skey, hashlib.sha256(shards[i]).hexdigest()])
+            er["shards"] = new
+            er["enc_len"] = len(blob)
+            rec["stored"] = sum(len(s) for s in shards)
 
     def _decompress_payload(self, payload: bytes, rec: dict) -> bytes:
         if "c" in rec:
@@ -285,27 +312,10 @@ class Vault:
         return out
 
     def _recompress_chunk(self, ph_hex: str, rec: dict) -> None:
-        """Re-encode an existing chunk with the current best codec, in place."""
+        """Re-encode an existing whole chunk with the current best codec, in place."""
         plaintext = self._read_chunk(ph_hex)
         payload, tag, dict_id = self._compress_best(plaintext)
-        blob = self.keyring.encrypt(payload)
-        if rec["mode"] == "replicate":
-            for pid, skey in rec["replicas"]:
-                if pid in self.backends:
-                    self.backends[pid].put(skey, blob)
-            rec["stored"] = len(blob) * len(rec["replicas"])
-        else:
-            er = rec["erasure"]
-            k, m = er["k"], er["m"]
-            shards = reedsolomon.encode(blob, k, m)
-            new = []
-            for i, (pid, skey, _h) in enumerate(er["shards"]):
-                if pid in self.backends:
-                    self.backends[pid].put(skey, shards[i])
-                new.append([pid, skey, hashlib.sha256(shards[i]).hexdigest()])
-            er["shards"] = new
-            er["enc_len"] = len(blob)
-            rec["stored"] = sum(len(s) for s in shards)
+        self._rewrite_blob_in_place(rec, self.keyring.encrypt(payload))
         rec["c"] = tag
         if dict_id:
             rec["dict"] = dict_id
@@ -313,14 +323,86 @@ class Vault:
             rec.pop("dict", None)
 
     def recompress_all(self) -> dict:
-        """Re-encode every stored chunk with the current best codec/dictionary."""
+        """Re-encode every whole chunk with the current best codec/dictionary."""
         before = self.manifest.stored_bytes()
         n = 0
         for ph_hex in list(self.manifest.chunks):
-            self._recompress_chunk(ph_hex, self.manifest.chunks[ph_hex])
+            rec = self.manifest.chunks[ph_hex]
+            if "delta" in rec:
+                continue  # deltas are handled by delta_compact, not recompression
+            self._recompress_chunk(ph_hex, rec)
             n += 1
         self._save_manifest()
         return {"chunks": n, "before": before, "after": self.manifest.stored_bytes()}
+
+    # ------------------------------------------------------------------- delta
+    def delta_compact(self, min_gain: float = 0.85) -> dict:
+        """Store near-duplicate chunks as diffs against a similar base chunk.
+
+        A compaction pass (like ``git gc``): find similar whole chunks via a
+        sketch index, and rewrite one as a small patch against the other whenever
+        that patch is meaningfully smaller. Bases stay whole and are pinned
+        (ref-counted) so GC never removes a chunk a delta still needs; a delta is
+        never itself a base, so decoding is always one hop.
+        """
+        before = self.manifest.stored_bytes()
+
+        # Pass 1: map similarity features -> a candidate base (first claimer wins).
+        index: Dict[str, str] = {}
+        for ph_hex, rec in list(self.manifest.chunks.items()):
+            if "delta" in rec:
+                continue
+            try:
+                pt = self._read_chunk(ph_hex)
+            except VaultError:
+                continue
+            for feat in delta.sketch(pt):
+                index.setdefault(feat, ph_hex)
+
+        # Pass 2: convert similar chunks to deltas.
+        bases: set = set()
+        converted = 0
+        for ph_hex in list(self.manifest.chunks):
+            rec = self.manifest.chunks[ph_hex]
+            if "delta" in rec or ph_hex in bases or rec.get("basedeps", 0) > 0:
+                continue  # skip deltas and any chunk already serving as a base (no chains)
+            try:
+                pt = self._read_chunk(ph_hex)
+            except VaultError:
+                continue
+            base_hex = None
+            for feat in delta.sketch(pt):
+                cand = index.get(feat)
+                if cand and cand != ph_hex and "delta" not in self.manifest.chunks.get(cand, {}):
+                    base_hex = cand
+                    break
+            if base_hex is None:
+                continue
+            try:
+                base_pt = self._read_chunk(base_hex)
+            except VaultError:
+                continue
+            patch = delta.make_delta(base_pt, pt)
+            standalone, _tag = compression.best(pt, zdict=self._active_zdict())
+            if len(patch) >= len(standalone) * min_gain:
+                continue  # not enough saving to be worth the base dependency
+
+            self._rewrite_blob_in_place(rec, self.keyring.encrypt(patch))
+            rec.pop("c", None)
+            rec.pop("dict", None)
+            rec["delta"] = base_hex
+            # Pin the base: an extra ref so GC keeps it while this delta lives.
+            self.manifest.incref(base_hex)
+            brec = self.manifest.chunks[base_hex]
+            brec["basedeps"] = brec.get("basedeps", 0) + 1
+            bases.add(base_hex)
+            # This chunk is now a delta; it must never be chosen as a base.
+            for feat in [f for f, b in index.items() if b == ph_hex]:
+                del index[feat]
+            converted += 1
+
+        self._save_manifest()
+        return {"converted": converted, "before": before, "after": self.manifest.stored_bytes()}
 
     # ----------------------------------------------------------------- files
     def put_bytes(self, data: bytes, vault_path: str) -> PutResult:
@@ -381,10 +463,22 @@ class Vault:
     def _release_chunks(self, chunk_hexes: List[str]) -> None:
         for ph_hex in chunk_hexes:
             if self.manifest.decref(ph_hex) <= 0:
-                rec = self.manifest.get_chunk(ph_hex)
-                if rec:
-                    self._delete_chunk_blobs(rec)
-                    self.manifest.drop_chunk(ph_hex)
+                self._gc_chunk(ph_hex)
+
+    def _gc_chunk(self, ph_hex: str) -> None:
+        """Delete a chunk's blobs and record; if it's a delta, release its base."""
+        rec = self.manifest.get_chunk(ph_hex)
+        if rec is None:
+            return
+        self._delete_chunk_blobs(rec)
+        self.manifest.drop_chunk(ph_hex)
+        if "delta" in rec:
+            base = rec["delta"]
+            brec = self.manifest.get_chunk(base)
+            if brec is not None:
+                brec["basedeps"] = max(0, brec.get("basedeps", 1) - 1)
+                if self.manifest.decref(base) <= 0:  # base no longer needed
+                    self._gc_chunk(base)
 
     def rm(self, vault_path: str) -> bool:
         vault_path = _norm(vault_path)

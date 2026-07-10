@@ -92,6 +92,45 @@ def main():
     print(f"best-of+dict vs old zlib     : {zlib_total / dict_total:.2f}x smaller")
     print(f"per-chunk winners            : {winners}")
 
+    delta_benchmark()
+
+
+def delta_benchmark():
+    """Delta compression on backup-style data: several near-identical snapshots."""
+    import tempfile
+    from starling import Policy, Vault
+
+    rng = random.Random(1)
+    doc = bytearray(rng.getrandbits(8) for _ in range(1_500_000))
+    snapshots = []
+    for _ in range(5):  # each snapshot edits ~a few hundred bytes of the last
+        for _ in range(15):
+            pos = rng.randrange(0, len(doc) - 500)
+            for j in range(rng.randint(50, 300)):
+                doc[pos + j] = rng.getrandbits(8)
+        snapshots.append(bytes(doc))
+
+    print("\n" + "=" * 64)
+    print("Delta compression — 5 near-identical 1.5 MB snapshots (a backup):")
+    with tempfile.TemporaryDirectory() as tmp:
+        provs = [{"id": f"p{i}", "kind": "local",
+                  "root": os.path.join(tmp, f"p{i}"), "capacity": 0} for i in range(2)]
+        v = Vault.create(os.path.join(tmp, "v"), "bench", policy=Policy(replicas=1),
+                         providers=provs)
+        for i, snap in enumerate(snapshots):
+            v.put_bytes(snap, f"snap{i}.bin")
+        before = v.stats()["stored_bytes"]
+        r = v.delta_compact()
+        after = r["after"]
+        for i, snap in enumerate(snapshots):  # prove exact reconstruction
+            assert v.get_bytes(f"snap{i}.bin") == snap
+        logical = sum(len(s) for s in snapshots)
+        print(f"  logical                    : {logical:>12,} bytes")
+        print(f"  stored after dedup+compress: {before:>12,} bytes")
+        print(f"  stored after delta          : {after:>12,} bytes  "
+              f"({r['converted']} chunks delta'd, {100*(before-after)/before:.0f}% smaller)")
+        print(f"  overall vs logical          : {logical/after:.1f}x smaller, and every snapshot verified byte-exact")
+
 
 if __name__ == "__main__":
     main()

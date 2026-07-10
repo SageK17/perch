@@ -62,6 +62,36 @@ Backends│  base.Backend   local · memory · s3 · webdav  │
    storage key, plus per-shard hashes for erasure). It's saved locally,
    encrypted.
 
+## Delta compression (`optimize --delta`)
+
+Deduplication only removes *identical* chunks. Backups, snapshots, and edited
+files are full of chunks that are *nearly* identical — a few bytes changed. A
+compaction pass (modelled on `git gc`) squeezes those:
+
+1. **Sketch** every whole chunk (`delta.sketch`) — a min-hash of its 16-byte
+   windows. Similar chunks share sketch features, so a similarity index maps
+   feature → candidate base without comparing every pair.
+2. For each whole chunk, find a similar base and compute a **copy/literal diff**
+   (`delta.make_delta`, rsync/bsdiff-style, unbounded by any window). If the diff
+   is meaningfully smaller than compressing the chunk standalone, rewrite the
+   chunk's stored blob as that patch and record `delta → base` in the manifest.
+
+Correctness is guarded by three invariants:
+
+- **Bases stay whole.** A chunk chosen as a base is never itself turned into a
+  diff, so decoding a delta is always exactly one hop (read base, apply patch,
+  verify hash). No chains.
+- **Bases are pinned.** Making a diff bumps the base's reference count, so
+  garbage collection can't drop a base while any diff still needs it — even if
+  the file that originally introduced the base is deleted.
+- **GC cascades.** Deleting the last file that references a diff frees the diff's
+  blobs and releases its hold on the base, which is then collected if nothing
+  else needs it.
+
+Because a diff still depends on its base being available, a delta chunk is only
+as durable as its base — but the base is a normal chunk with the same redundancy,
+so losing providers is survivable up to the policy's tolerance for both.
+
 ## The read path (`get`)
 
 For each chunk hash in the file:

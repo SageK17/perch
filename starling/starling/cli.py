@@ -12,6 +12,8 @@ Command-line interface for Starling.
     starling fsck          verify redundancy/integrity; --repair to self-heal
     starling sync          mirror the encrypted manifest to providers (push/pull)
     starling dashboard     write a self-contained HTML status page
+    starling optimize      recompress data; --delta also diffs near-duplicates
+    starling dict          train/show a shared compression dictionary
 
 The vault passphrase comes from $STARLING_PASSPHRASE, or is prompted for. It is
 never written to disk; only a scrypt salt is stored, in config.json.
@@ -254,6 +256,13 @@ def cmd_optimize(args) -> int:
     print(f"Recompressed {r['chunks']} chunk(s) with the best available codec.")
     print(f"Stored: {fmt_size(r['before'])} -> {fmt_size(r['after'])} "
           f"({fmt_size(saved)} saved, {pct:.1f}%).")
+    if args.delta:
+        d = vault.delta_compact()
+        dsaved = d["before"] - d["after"]
+        dpct = (dsaved / d["before"] * 100) if d["before"] else 0
+        print(f"Delta-compressed {d['converted']} near-duplicate chunk(s).")
+        print(f"Stored: {fmt_size(d['before'])} -> {fmt_size(d['after'])} "
+              f"({fmt_size(dsaved)} saved, {dpct:.1f}%).")
     return 0
 
 
@@ -330,6 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_dashboard)
 
     q = sub.add_parser("optimize", help="recompress stored data with the best codec")
+    q.add_argument("--delta", action="store_true",
+                   help="also delta-compress near-duplicate chunks (backups, versions)")
     q.set_defaults(func=cmd_optimize)
 
     dic = sub.add_parser("dict", help="manage the shared compression dictionary")

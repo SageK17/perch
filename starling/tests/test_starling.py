@@ -18,7 +18,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from starling import Policy, Vault, VaultError  # noqa: E402
-from starling import compression, crypto, reedsolomon  # noqa: E402
+from starling import compression, crypto, delta, reedsolomon  # noqa: E402
 from starling.chunker import chunk_bytes  # noqa: E402
 
 PW = "correct horse battery staple"
@@ -321,6 +321,83 @@ def test_retrain_keeps_old_chunks_readable():
         # both dictionaries are retained, so both files still decode
         assert v.get_bytes("a.bin") == corpus_a[0]
         assert v.get_bytes("b.bin") == corpus_b[0]
+
+
+def _variants(base_len=80000, edits=(20000, 40000, 60000), seed=7):
+    """A base blob plus variants, each with a tiny in-place edit -> content-defined
+    chunking keeps most chunks identical and leaves one *similar* chunk per edit."""
+    rng = random.Random(seed)
+    base = bytes(rng.getrandbits(8) for _ in range(base_len))
+    files = [base]
+    for j, pos in enumerate(edits):
+        files.append(base[:pos] + bytes([j + 1] * 8) + base[pos + 8:])
+    return base, files
+
+
+def test_delta_roundtrip_and_size():
+    rng = random.Random(5)
+    base = bytes(rng.getrandbits(8) for _ in range(20000))
+    target = base[:10000] + b"A SMALL CHANGE" + base[10014:]
+    patch = delta.make_delta(base, target)
+    assert delta.apply_delta(base, patch) == target        # exact reconstruction
+    assert len(patch) < len(target) * 0.2, "patch of a near-duplicate should be tiny"
+    # similar blobs share similarity features; unrelated ones (usually) don't
+    assert set(delta.sketch(base)) & set(delta.sketch(target))
+
+
+def test_delta_compaction_shrinks_and_reads_back():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 2))
+        _, files = _variants()
+        for i, data in enumerate(files):
+            v.put_bytes(data, f"v{i}.bin")
+        r = v.delta_compact()
+        assert r["converted"] >= 1, "expected near-duplicate chunks to be delta-encoded"
+        assert r["after"] < r["before"], "delta compaction should reduce stored bytes"
+        for i, data in enumerate(files):
+            assert v.get_bytes(f"v{i}.bin") == data, "delta chunk did not reconstruct exactly"
+
+
+def test_delta_base_is_pinned_and_gcs_correctly():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW, policy=Policy(replicas=1),
+                         providers=_local_providers(tmp, 2))
+        rng = random.Random(11)
+        a = bytes(rng.getrandbits(8) for _ in range(80000))
+        b = a[:30000] + b"DIFFERENT" + a[30009:]
+        v.put_bytes(a, "a.bin")
+        v.put_bytes(b, "b.bin")
+        assert v.delta_compact()["converted"] >= 1
+        deltas = [ph for ph, rec in v.manifest.chunks.items() if "delta" in rec]
+        assert deltas
+        base = v.manifest.chunks[deltas[0]]["delta"]
+        assert "delta" not in v.manifest.chunks[base], "a base must be whole (no chains)"
+        assert v.manifest.chunks[base].get("basedeps", 0) >= 1
+        # Deleting the file that owns the base must NOT break the delta that needs it.
+        v.rm("a.bin")
+        assert v.get_bytes("b.bin") == b, "base was GC'd while a delta still depended on it"
+        # Deleting the delta releases it and cascades the now-unreferenced base.
+        v.rm("b.bin")
+        assert sum(bk.used_bytes() for bk in v.backends.values()) == 0
+        assert len(v.manifest.chunks) == 0
+
+
+def test_delta_survives_provider_loss():
+    with tempfile.TemporaryDirectory() as tmp:
+        v = Vault.create(os.path.join(tmp, "v"), PW,
+                         policy=Policy(mode="erasure", k=2, m=2),
+                         providers=_local_providers(tmp, 4))
+        rng = random.Random(13)
+        a = bytes(rng.getrandbits(8) for _ in range(80000))
+        b = a[:40000] + b"XYZ" + a[40003:]
+        v.put_bytes(a, "a.bin")
+        v.put_bytes(b, "b.bin")
+        v.delta_compact()
+        _wipe_provider(v, "p0")
+        _wipe_provider(v, "p1")  # lose m=2 of 4 providers
+        assert v.get_bytes("b.bin") == b, "delta patch + base must both reconstruct"
+        assert v.get_bytes("a.bin") == a
 
 
 # --------------------------------------------------------------------------- #

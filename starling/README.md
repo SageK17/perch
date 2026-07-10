@@ -36,7 +36,7 @@ disappearing — or deleting your account — doesn't lose your data.
 | Survives providers going down | Replication or Reed–Solomon erasure coding, one shard per provider |
 | Survives *account loss* | The encrypted manifest is mirrored to the providers; passphrase + providers = full recovery |
 | Doesn't store the same bytes twice | Content-defined (FastCDC) chunking + content addressing |
-| Shrinks the data | Per-chunk best-of compression (zlib / LZMA) + an optional shared vault dictionary for lots of small similar files |
+| Shrinks the data | Per-chunk best-of compression (zlib / LZMA) + optional shared vault dictionary + delta compression of near-duplicate chunks |
 | Self-healing | `fsck --repair` rebuilds missing copies/shards onto healthy providers |
 | No lock-in, no dependencies | Pure Python standard library (uses `cryptography` for AES if present, falls back to a stdlib cipher otherwise) |
 
@@ -80,6 +80,7 @@ python3 -m starling dashboard -o status.html
 # 5. Shrink the data further.
 python3 -m starling dict train ~/samples/   # learn a shared dictionary (or omit path to learn from the vault)
 python3 -m starling optimize                # recompress everything with the best codec
+python3 -m starling optimize --delta        # also store near-duplicate chunks as diffs (backups/versions)
 ```
 
 See the whole thing run — pool 8 accounts, kill 2, recover, self-heal:
@@ -118,10 +119,20 @@ For **lots of small, similar files** (logs, JSON records, templated documents),
 train a **shared dictionary**: one vault-wide codebook of common blocks that
 every chunk can reference instead of each carrying its own copy.
 
+For **backups, snapshots, and edited versions**, run **delta compression**:
+exact dedup already removes identical chunks, and `optimize --delta` stores the
+*near*-duplicate ones (a chunk that changed by a few bytes) as a small diff
+against a similar chunk instead of a whole second copy. On five near-identical
+1.5 MB snapshots it cuts stored size ~47% beyond dedup — every snapshot still
+restores byte-for-byte. It works like `git gc`: a compaction pass, not the write
+path. Bases are pinned so garbage collection never drops a chunk a diff needs,
+and a diff is never itself a base (one hop to decode, always).
+
 ```bash
 python3 -m starling dict train ./my-json-records/   # or no path: learn from the vault
 python3 -m starling dict show
 python3 -m starling optimize                         # recompress existing data
+python3 -m starling optimize --delta                 # + delta-compress near-duplicates
 python3 examples/benchmark.py                        # honest before/after on a sample corpus
 ```
 
