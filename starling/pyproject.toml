@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starling-storage"
+version = "0.1.0"
+description = "A murmuration of free clouds acting as one giant, encrypted, deduplicated drive."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE.txt" }
+authors = [{ name = "Sage Acheampong" }]
+keywords = ["storage", "encryption", "deduplication", "erasure-coding", "cloud", "backup"]
+# No required dependencies: runs on the standard library alone.
+# 'cryptography' is used for AES-256-GCM when present; otherwise a stdlib
+# authenticated cipher is used automatically.
+dependencies = []
+
+[project.optional-dependencies]
+aes = ["cryptography>=3.4"]
+s3 = ["boto3>=1.20"]
+
+[project.scripts]
+starling = "starling.cli:main"
+
+[tool.setuptools]
+packages = ["starling", "starling.backends"]
