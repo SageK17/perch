@@ -1,23 +1,20 @@
 """
 Templates for real cloud providers.
 
-Starling ships with two *working* backends (local directory, in-memory) so the
-whole system runs end-to-end with zero credentials. To pool real free-tier
-accounts you add a backend per provider. The contract is tiny -- five methods
-from :class:`~starling.backends.base.Backend` -- so an adapter is usually well
-under 100 lines.
+For S3-compatible storage, use the **native, dependency-free** backend in
+``starling/backends/s3.py`` (kind ``s3``) -- it's the real, tested adapter. This
+file holds *alternative* starting points for writing your own:
 
-Below are two illustrative adapters:
-
-  * ``S3Backend`` -- works against any S3-compatible object store. Several have
-    genuinely useful free tiers you can pool: Cloudflare R2 (10 GB), Backblaze
-    B2 (10 GB), Storj, Idrive e2, and so on. Requires ``boto3``.
+  * ``S3Backend`` -- a ``boto3``-based version, if you'd rather lean on the AWS
+    SDK than the built-in stdlib SigV4 one.
   * ``WebDAVBackend`` -- a sketch for WebDAV shares (many free hosts speak it),
     using only the standard library.
 
-Neither is imported by default and neither is exercised by the test suite (they
-need live credentials), so treat them as starting points, not turnkey code.
-Register your own in ``starling/backends/registry.py``.
+Neither is imported by default nor exercised by the test suite (they need live
+credentials or a running server), so treat them as templates, not turnkey code.
+The contract is tiny -- five methods from
+:class:`~starling.backends.base.Backend` -- so an adapter is usually well under
+100 lines. Register your own in ``starling/backends/registry.py``.
 """
 
 from __future__ import annotations

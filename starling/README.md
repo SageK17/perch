@@ -59,12 +59,15 @@ export STARLING_VAULT=./myvault
 # 1. Create a vault. Erasure code 4+2 = survives any 2 providers dying, 1.5x space.
 python3 -m starling init --policy erasure -k 4 -m 2
 
-# 2. Pool your free accounts. (Local folders here stand in for real clouds;
-#    see docs/BACKENDS.md to wire up Google Drive / Dropbox / S3 / R2 / B2.)
-python3 -m starling provider add --id gdrive  --root ~/mnt/gdrive  --capacity 15GB
-python3 -m starling provider add --id dropbox --root ~/mnt/dropbox --capacity 2GB
-python3 -m starling provider add --id r2      --root ~/mnt/r2      --capacity 10GB
-# ...add as many as you like
+# 2. Pool your free accounts.
+#    Native S3 works with any S3-compatible free tier (R2, B2, Storj, ...):
+export R2_KEY=... R2_SECRET=...
+python3 -m starling provider add --id r2 --kind s3 --bucket my-bucket \
+    --endpoint https://<acct>.r2.cloudflarestorage.com --region auto \
+    --access-key-env R2_KEY --secret-key-env R2_SECRET --capacity 10GB
+#    Or mount any cloud as a folder with rclone and use a local provider:
+python3 -m starling provider add --id gdrive --root ~/mnt/gdrive --capacity 15GB
+# ...add as many as you like (see docs/BACKENDS.md)
 
 # 3. Use it like a drive.
 python3 -m starling put ~/Videos/trip.mp4 videos/trip.mp4
@@ -163,7 +166,8 @@ starling/
   placement.py     redundancy policy + weighted-rendezvous provider selection
   manifest.py      the encrypted index (files → chunks → locations)
   engine.py        the Vault: put/get/rm/ls/df/fsck/sync
-  backends/        provider SPI + local/memory + cloud templates
+  delta.py         similarity sketch + copy/literal diff for near-duplicates
+  backends/        provider SPI + local/memory + native S3 (s3.py) + templates
   dashboard.py     self-contained HTML status page
   cli.py           the command line
 tests/             end-to-end tests (run: python3 tests/test_starling.py)
@@ -178,18 +182,21 @@ python3 tests/test_starling.py     # no dependencies; pytest also works
 ```
 
 Covers dedup, authenticated encryption, Reed–Solomon reconstruction, surviving
-provider outages, self-heal, garbage collection, and manifest recovery.
+provider outages, self-heal, garbage collection, manifest recovery, delta
+compression, and the native S3 backend (SigV4 + a full engine→S3→HTTP round-trip
+against an in-process S3 server).
 
 ## Status & honesty
 
-This is a working prototype with a real, tested storage engine. The two
-included backends (local directory, in-memory) run with zero credentials so the
-whole system is exercisable end-to-end. Real cloud adapters (S3-compatible,
-WebDAV) are provided as documented templates in
-[`backends/cloud_template.py`](starling/backends/cloud_template.py) — the
-provider contract is five methods, so adding one is small. Performance is
-pure-Python and fine for personal use (tens of MB/s with AES available); it is
-not tuned for terabyte workloads.
+This is a working prototype with a real, tested storage engine. Local-directory
+and in-memory backends run with zero credentials so the whole system is
+exercisable end-to-end, and a **native S3 backend** ([`backends/s3.py`](starling/backends/s3.py))
+talks to any S3-compatible free tier (R2, B2, Storj, AWS, MinIO) with no
+dependencies — its SigV4 signing is verified against AWS's published test
+vector, and the full engine→S3→HTTP path is covered by tests against an
+in-process S3 server. The provider contract is just five methods, so more
+adapters are small. Performance is pure-Python and fine for personal use (tens
+of MB/s with AES available); it is not tuned for terabyte workloads.
 
 ## License
 

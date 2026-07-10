@@ -100,7 +100,22 @@ def cmd_provider_add(args) -> int:
         if not args.root:
             raise VaultError("local providers need --root")
         spec["root"] = os.path.abspath(args.root)
-    vault.add_provider(spec)
+    elif args.kind == "s3":
+        if not args.bucket:
+            raise VaultError("s3 providers need --bucket")
+        spec["bucket"] = args.bucket
+        spec["region"] = args.region
+        spec["prefix"] = args.prefix
+        spec["access_key_env"] = args.access_key_env
+        spec["secret_key_env"] = args.secret_key_env
+        if args.endpoint:
+            spec["endpoint_url"] = args.endpoint
+        if args.session_token_env:
+            spec["session_token_env"] = args.session_token_env
+    try:
+        vault.add_provider(spec)  # builds the backend, so bad creds/config fail here
+    except ValueError as exc:
+        raise VaultError(str(exc)) from exc
     cap = fmt_size(spec["capacity"]) if spec["capacity"] else "unmetered"
     print(f"Added provider {args.id!r} ({args.kind}, {cap}).")
     return 0
@@ -297,9 +312,20 @@ def build_parser() -> argparse.ArgumentParser:
     psub = prov.add_subparsers(dest="pcmd", required=True)
     pa = psub.add_parser("add", help="register a provider")
     pa.add_argument("--id", required=True)
-    pa.add_argument("--kind", choices=["local", "memory"], default="local")
+    pa.add_argument("--kind", choices=["local", "memory", "s3"], default="local")
     pa.add_argument("--root", help="directory (for kind=local)")
     pa.add_argument("--capacity", default="0", help="free-tier size, e.g. 15GB")
+    # s3 options (credentials come from env vars, never stored in config)
+    pa.add_argument("--bucket", help="bucket name (for kind=s3)")
+    pa.add_argument("--endpoint", help="S3 endpoint URL for R2/B2/MinIO (omit for AWS)")
+    pa.add_argument("--region", default="us-east-1", help="S3 region")
+    pa.add_argument("--prefix", default="starling/", help="key prefix within the bucket")
+    pa.add_argument("--access-key-env", default="AWS_ACCESS_KEY_ID",
+                    help="env var holding the access key")
+    pa.add_argument("--secret-key-env", default="AWS_SECRET_ACCESS_KEY",
+                    help="env var holding the secret key")
+    pa.add_argument("--session-token-env", default="",
+                    help="optional env var holding a session token")
     pa.set_defaults(func=cmd_provider_add)
     pl = psub.add_parser("ls", help="list providers")
     pl.set_defaults(func=cmd_provider_ls)

@@ -400,6 +400,122 @@ def test_delta_survives_provider_loss():
         assert v.get_bytes("a.bin") == a
 
 
+def _start_mock_s3():
+    """A minimal in-process S3-compatible server for testing the S3 backend."""
+    import http.server
+    import threading
+    import urllib.parse
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def _key(self):
+            path = urllib.parse.urlsplit(self.path).path
+            parts = path.split("/", 2)          # ['', bucket, key...]
+            return parts[2] if len(parts) >= 3 else ""
+
+        def _reply(self, code, body=b""):
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_PUT(self):
+            n = int(self.headers.get("Content-Length", 0))
+            self.server.store[self._key()] = self.rfile.read(n)
+            self._reply(200)
+
+        def do_HEAD(self):
+            self._reply(200 if self._key() in self.server.store else 404)
+
+        def do_DELETE(self):
+            self.server.store.pop(self._key(), None)
+            self._reply(204)
+
+        def do_GET(self):
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            if "list-type" in q:
+                prefix = q.get("prefix", [""])[0]
+                items = "".join(
+                    f"<Contents><Key>{k}</Key><Size>{len(v)}</Size></Contents>"
+                    for k, v in self.server.store.items() if k.startswith(prefix)
+                )
+                xml = ('<?xml version="1.0"?><ListBucketResult '
+                       'xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                       f"<IsTruncated>false</IsTruncated>{items}</ListBucketResult>")
+                self._reply(200, xml.encode())
+            else:
+                b = self.server.store.get(self._key())
+                self._reply(404) if b is None else self._reply(200, b)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    srv.store = {}
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}", srv.store
+
+
+def test_s3_sigv4_signing_key_matches_aws_vector():
+    from starling.backends.s3 import signing_key
+    # AWS-documented SigV4 signing-key derivation example.
+    k = signing_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "20150830", "us-east-1", "iam")
+    assert k.hex() == "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9"
+
+
+def test_s3_backend_roundtrip_via_mock_server():
+    from starling.backends.base import BlobNotFound
+    from starling.backends.s3 import S3Backend
+    srv, base, _store = _start_mock_s3()
+    try:
+        b = S3Backend("s3", "test", access_key="AK", secret_key="SK",
+                      endpoint_url=base, capacity=100)
+        assert not b.exists("k1")
+        b.put("k1", b"hello world")
+        b.put("k2", b"1234")
+        assert b.exists("k1")
+        assert b.get("k1") == b"hello world"
+        assert set(b.list_keys()) == {"k1", "k2"}
+        assert b.used_bytes() == len(b"hello world") + 4
+        try:
+            b.get("missing")
+            raise AssertionError("expected BlobNotFound")
+        except BlobNotFound:
+            pass
+        b.delete("k1")
+        assert not b.exists("k1")
+        assert b.health_check()
+    finally:
+        srv.shutdown()
+
+
+def test_s3_vault_end_to_end():
+    srv, base, store = _start_mock_s3()
+    os.environ["STARLING_TEST_AK"] = "AKIDEXAMPLE"
+    os.environ["STARLING_TEST_SK"] = "secret-key"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            spec = {"id": "cloud", "kind": "s3", "bucket": "test", "endpoint_url": base,
+                    "region": "us-east-1", "prefix": "starling/",
+                    "access_key_env": "STARLING_TEST_AK",
+                    "secret_key_env": "STARLING_TEST_SK", "capacity": 0}
+            vdir = os.path.join(tmp, "v")
+            v = Vault.create(vdir, PW, policy=Policy(replicas=1), providers=[spec])
+            data = _blob(120_000, seed=42)
+            v.put_bytes(data, "docs/f.bin")
+            assert store, "no chunks were written to the S3 backend"
+            assert v.get_bytes("docs/f.bin") == data
+            # Reopen with fresh backend instances: the data really lives on the
+            # (mock) remote server, while only the index is on local disk.
+            v2 = Vault.open(vdir, PW)
+            assert v2.get_bytes("docs/f.bin") == data
+            v2.rm("docs/f.bin")
+            assert sum(bk.used_bytes() for bk in v2.backends.values()) == 0
+    finally:
+        srv.shutdown()
+
+
 # --------------------------------------------------------------------------- #
 # runner
 # --------------------------------------------------------------------------- #

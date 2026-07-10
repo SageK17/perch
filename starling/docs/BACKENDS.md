@@ -45,35 +45,45 @@ python3 -m starling provider add --id onedrive --root ~/mnt/onedrive --capacity 
 That already gives you pooling + encryption + dedup + erasure coding across real
 free accounts, with no code.
 
-## Native cloud adapters
+## Native S3 adapter (built in, no dependencies)
 
-For direct API access (no mount), add a backend. Templates are in
-[`starling/backends/cloud_template.py`](../starling/backends/cloud_template.py):
+For direct API access with **no mount and no `boto3`**, Starling ships a real
+S3-compatible backend: [`starling/backends/s3.py`](../starling/backends/s3.py).
+It implements AWS Signature Version 4 with `hashlib`/`hmac` (the signing is
+verified against AWS's published test vector) and talks over `urllib`, so it
+works against any S3 API — **Cloudflare R2 (10 GB free), Backblaze B2 (10 GB
+free), Storj, iDrive e2, AWS S3, MinIO** — with zero extra installs.
 
-- **`S3Backend`** — any S3-compatible store. Several have real free tiers worth
-  pooling: Cloudflare R2 (10 GB), Backblaze B2 (10 GB), Storj, iDrive e2, MinIO.
-  Needs `boto3`.
-- **`WebDAVBackend`** — a stdlib sketch for WebDAV shares.
+Credentials come from **environment variables**, never the config file. Add a
+provider from the CLI:
 
-To enable one, wire it into `build_backend()` in
-[`starling/backends/registry.py`](../starling/backends/registry.py):
+```bash
+export R2_KEY=...           # your Cloudflare R2 access key id
+export R2_SECRET=...        # your R2 secret
 
-```python
-if kind == "s3":
-    from .cloud_template import S3Backend
-    return S3Backend(
-        bid, spec["bucket"],
-        endpoint_url=spec.get("endpoint_url"),
-        access_key=os.environ["R2_ACCESS_KEY"],   # keep secrets in env, not config
-        secret_key=os.environ["R2_SECRET_KEY"],
-        capacity=capacity,
-    )
+python3 -m starling provider add \
+    --id r2 --kind s3 \
+    --bucket my-starling-bucket \
+    --endpoint https://<accountid>.r2.cloudflarestorage.com \
+    --region auto \
+    --access-key-env R2_KEY --secret-key-env R2_SECRET \
+    --capacity 10GB
 ```
 
-Provider specs live in the vault's `config.json`. **Never put credentials
-there** — read them from environment variables or a secrets manager inside the
-adapter, and keep only non-secret fields (bucket name, endpoint, capacity) in
-the spec.
+Backblaze B2 (its S3 endpoint), Storj, MinIO, etc. are the same call with a
+different `--endpoint`. For AWS S3 you can omit `--endpoint` and just pass
+`--region`. Pool several and Starling stripes erasure-coded, encrypted shards
+across all of them — the data lives on those remote servers, not your device.
+
+The vault's `config.json` stores only non-secret fields (bucket, endpoint,
+region, and the *names* of the env vars holding the keys). The keys themselves
+are read from the environment at runtime.
+
+### Other adapters / templates
+
+[`starling/backends/cloud_template.py`](../starling/backends/cloud_template.py)
+has a `WebDAVBackend` sketch and a `boto3`-based S3 alternative, as starting
+points for writing your own.
 
 ## Writing your own
 
