@@ -53,9 +53,14 @@ main{max-width:640px;margin:0 auto;padding:18px 16px 30px}
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
   border:0;border-radius:12px;font:700 15px/1 inherit;padding:14px 16px;cursor:pointer;
+  transition:transform .09s ease, background .12s ease;
 }
+.btn:active{transform:translateY(1px)}
 .btn.primary{background:var(--green);color:#fff;box-shadow:var(--shadow)}
 .btn.primary:active{background:var(--green-d)}
+.navbtn{transition:transform .09s ease, color .12s ease}
+.navbtn:active{transform:scale(.92)}
+.chip{transition:transform .1s ease, border-color .12s ease}
 .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
 .btn.tiny{padding:8px 11px;font-size:13px;border-radius:10px;background:#fff;color:var(--green-d);border:1px solid var(--line)}
 .row{display:flex;gap:10px;margin-top:12px}
@@ -101,8 +106,13 @@ textarea.msg{min-height:96px}
 
 /* verdict / result */
 .result{margin-top:14px}
-.verdict{border-radius:14px;border:1.5px solid;padding:14px;box-shadow:var(--shadow)}
+.verdict{border-radius:14px;border:1.5px solid;padding:14px;box-shadow:var(--shadow);
+  animation:reveal .32s cubic-bezier(.2,.7,.2,1)}
+@keyframes reveal{from{opacity:0;transform:translateY(10px)}}
 .verdict.danger{border-color:#f2c4c4;background:var(--danger-bg)}
+/* danger gets one gentle attention ring — a single pulse, never repeating */
+.verdict.danger{animation:reveal .32s cubic-bezier(.2,.7,.2,1),dangerPulse .85s ease-out .12s 1}
+@keyframes dangerPulse{0%{box-shadow:0 0 0 0 rgba(210,59,59,.45)}100%{box-shadow:0 0 0 16px rgba(210,59,59,0)}}
 .verdict.caution{border-color:#f3ddb4;background:var(--caution-bg)}
 .verdict.clear{border-color:#c8e8d5;background:var(--clear-bg)}
 .v-head{display:flex;gap:11px;align-items:flex-start}
@@ -191,7 +201,9 @@ a.cline b{color:var(--green-d)}
   position:fixed;left:50%;transform:translateX(-50%);bottom:86px;z-index:40;
   background:var(--ink);color:#fff;padding:11px 16px;border-radius:999px;font-size:14px;
   box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:90vw;text-align:center;
+  animation:toastIn .28s cubic-bezier(.2,.7,.2,1);
 }
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,12px)}}
 @media(prefers-reduced-motion:no-preference){
   .result,.scam-inner{animation:fade .2s ease}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -199,7 +211,9 @@ a.cline b{color:var(--green-d)}
 
 /* risk meter on verdict cards */
 .meter{height:7px;border-radius:99px;background:rgba(20,50,35,.1);margin:12px 0 2px;overflow:hidden}
-.meter span{display:block;height:100%;border-radius:99px;transition:width .5s cubic-bezier(.2,.7,.2,1)}
+/* the bar fills from empty on every reveal, so severity reads at a glance */
+.meter span{display:block;height:100%;border-radius:99px;animation:meterFill .6s cubic-bezier(.2,.7,.2,1)}
+@keyframes meterFill{from{width:0}}
 .verdict.danger .meter span{background:var(--danger)}
 .verdict.caution .meter span{background:var(--caution)}
 .verdict.clear .meter span{background:var(--clear)}
@@ -240,9 +254,16 @@ a.cline b{color:var(--green-d)}
 /* focus visibility */
 :focus-visible{outline:3px solid var(--gold);outline-offset:2px;border-radius:8px}
 
+/* Respect the OS "reduce motion" setting: neutralise every entrance,
+   pulse, and transition (spinner included) so nothing moves for users
+   who asked for stillness — structure and colour still communicate. */
 @media (prefers-reduced-motion: reduce){
-  *,.meter span{transition:none !important}
-  .loading .ic{animation:none}
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
 }
 
 /* dark mode */
