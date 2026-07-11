@@ -1,0 +1,16 @@
+{
+  "name": "SikaSafe — Guard your MoMo",
+  "short_name": "SikaSafe",
+  "description": "Spot mobile money (MoMo) scams in Ghana before you lose money. Check messages, learn the tricks, know who to call. Works offline.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f8f6",
+  "theme_color": "#0b6b46",
+  "lang": "en",
+  "categories": ["finance", "education", "utilities"],
+  "icons": [
+    { "src": "icons/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
