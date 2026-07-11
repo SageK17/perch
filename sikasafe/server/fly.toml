@@ -1,0 +1,39 @@
+# Fly.io config for the SikaSafe community backend.
+#
+#   fly launch --no-deploy --copy-config      # reuse this file
+#   fly volumes create sikasafe_data --size 1 --region jnb
+#   fly secrets set SIKA_SALT="$(openssl rand -hex 32)" \
+#                   SIKA_ADMIN_TOKEN="$(openssl rand -hex 32)" \
+#                   SIKA_ALLOW_ORIGIN="https://sikasafe.pages.dev"
+#   fly deploy
+#
+# Secrets are set with `fly secrets`, never in this file.
+
+app = "sikasafe-api"
+primary_region = "jnb"            # Johannesburg — Fly's closest region to Ghana
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8791"
+  SIKA_DB = "/data/sikasafe.db"
+  SIKA_TRUSTED_PROXY_HOPS = "1"   # Fly's proxy adds exactly one hop to X-Forwarded-For
+
+[[mounts]]
+  source = "sikasafe_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8791
+  force_https = true              # redirect all HTTP to HTTPS
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "4s"
+    grace_period = "5s"

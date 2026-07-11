@@ -1,0 +1,34 @@
+# Render Blueprint for the SikaSafe community backend.
+#
+# Render reads a `render.yaml` at the repo root. In this monorepo the backend
+# lives in `sikasafe/server`, so `rootDir` points Render there. If your Render
+# plan doesn't honour `rootDir` in a Blueprint, copy this file to the repo root
+# or create the service manually with Root Directory = sikasafe/server.
+#
+# Secrets marked `sync: false` / `generateValue: true` are NOT stored in git —
+# Render generates or prompts for them. Never commit SIKA_SALT or
+# SIKA_ADMIN_TOKEN.
+services:
+  - type: web
+    name: sikasafe-api
+    runtime: docker
+    rootDir: sikasafe/server
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    plan: free
+    autoDeploy: true
+    disk:
+      name: sikasafe-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SIKA_DB
+        value: /data/sikasafe.db
+      - key: SIKA_TRUSTED_PROXY_HOPS
+        value: "1"                 # Render puts exactly one load balancer in front
+      - key: SIKA_ALLOW_ORIGIN
+        sync: false                # set to your app origin, e.g. https://sikasafe.pages.dev
+      - key: SIKA_SALT
+        generateValue: true        # strong random salt for reporter hashes
+      - key: SIKA_ADMIN_TOKEN
+        generateValue: true        # bearer token for /api/admin/* moderation

@@ -293,16 +293,53 @@ async function doLookup() {
     try {
       const a = await api.lookup(num);
       const extra = localCount ? `<p class="also">You also reported this number.</p>` : '';
-      if (a.status === 'flagged')
-        box.innerHTML = verdictCard('danger', `Flagged by ${a.reporters} people`, 'The community has reported this as a scam. Do not send money or share codes.', extra);
-      else if (a.status === 'watch')
-        box.innerHTML = verdictCard('caution', `${a.reporters} early report${a.reporters === 1 ? '' : 's'}`, `Reported by ${a.reporters}, not yet confirmed (needs ${a.threshold}). Be careful.`, extra);
-      else
+      if (a.status === 'flagged') {
+        box.innerHTML = verdictCard('danger', `Flagged by ${a.reporters} people`, 'The community has reported this as a scam. Do not send money or share codes.', extra + disputeBlock(num));
+        wireDispute(box);
+      } else if (a.status === 'watch') {
+        box.innerHTML = verdictCard('caution', `${a.reporters} early report${a.reporters === 1 ? '' : 's'}`, `Reported by ${a.reporters}, not yet confirmed (needs ${a.threshold}). Be careful.`, extra + disputeBlock(num));
+        wireDispute(box);
+      } else if (a.status === 'cleared') {
+        box.innerHTML = verdictCard('clear', 'Reviewed and cleared', 'A moderator reviewed reports about this number and cleared it. Stay careful all the same.', extra);
+      } else {
         box.innerHTML = verdictCard('clear', 'Not reported by the community', 'No one has flagged this yet — but that is not a guarantee it is safe. Stay careful.', extra);
+      }
       return;
     } catch { box.innerHTML = localLookupCard(localCount, true); return; }
   }
   box.innerHTML = localLookupCard(localCount, false);
+}
+
+/* Give a wrongly-flagged party a way to contest a number. It never changes the
+   status by itself — it just queues the number for a human moderator. */
+function disputeBlock(num) {
+  return `<details class="dispute">
+    <summary>${ico('info', 'ic sm')} Not a scam? Dispute this number</summary>
+    <div class="rf-inner">
+      <p class="muted small">If this is a legitimate number reported by mistake, tell us why. A moderator will review it — this does not remove the warning on its own.</p>
+      <textarea id="disp-reason" class="inp" rows="2" placeholder="Why is this not a scam?"></textarea>
+      <input id="disp-contact" class="inp" inputmode="email" placeholder="Contact (optional, so we can follow up)">
+      <button id="btn-dispute" class="btn ghost" data-num="${esc(num)}">${ico('flag', 'ic sm')} Submit dispute</button>
+    </div>
+  </details>`;
+}
+
+function wireDispute(box) {
+  const b = box.querySelector('#btn-dispute');
+  if (!b) return;
+  b.addEventListener('click', async () => {
+    const reason = (box.querySelector('#disp-reason').value || '').trim();
+    const contact = (box.querySelector('#disp-contact').value || '').trim();
+    b.disabled = true;
+    try {
+      await api.dispute({ number: b.dataset.num, reason, contact });
+      toast('Dispute sent for review — thank you');
+      const d = box.querySelector('.dispute'); if (d) d.open = false;
+    } catch {
+      toast('Could not send dispute — try again later');
+      b.disabled = false;
+    }
+  });
 }
 
 function localLookupCard(localCount, offline) {

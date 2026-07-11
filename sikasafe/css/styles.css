@@ -245,6 +245,13 @@ a.cline b{color:var(--green-d)}
 .numacts{margin-left:auto;display:flex;gap:7px}
 .warnbtn{width:100%;margin-top:12px;justify-content:center}
 
+/* dispute-a-flag disclosure, shown inside a flagged/watch verdict card */
+.dispute{margin-top:12px;border-top:1px solid rgba(20,50,35,.12);padding-top:4px}
+.dispute summary{cursor:pointer;font-size:13.5px;font-weight:700;color:var(--mut);
+  display:flex;align-items:center;gap:7px;list-style:none;padding:7px 0}
+.dispute summary::-webkit-details-marker{display:none}
+.dispute .rf-inner{padding:2px 0 6px}
+
 /* recently-flagged community list */
 .recent-list{margin-top:18px}
 .rep.flagged{border-color:#f2c4c4}

@@ -18,14 +18,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server  # noqa: E402
 
 
-def _req(base, path, method="GET", body=None, ip=None):
+def _req(base, path, method="GET", body=None, ip=None, token=None):
     url = base + path
     data = json.dumps(body).encode() if body is not None else None
     headers = {}
     if data:
         headers["Content-Type"] = "application/json"
     if ip:
-        headers["X-Forwarded-For"] = ip   # simulate distinct networks
+        headers["X-Forwarded-For"] = ip   # simulate the proxy chain / networks
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -109,6 +111,46 @@ def run():
     # recent returns masked flagged numbers
     s, b = _req(base, "/api/recent")
     ok("recent masks numbers", len(b["recent"]) == 1 and "•" in b["recent"][0]["number"])
+
+    # ---- XFF spoofing cannot forge distinct networks (anti-poisoning holds) ----
+    # Attacker forges the LEFT of X-Forwarded-For; the trusted proxy appends the
+    # real IP on the RIGHT. With TRUSTED_PROXY_HOPS=1 only the right is trusted,
+    # so all three reports collapse to ONE network -> stays "watch".
+    SPOOF = "0248880001"
+    for i in (1, 2, 3):
+        s, b = _req(base, "/api/report", "POST",
+                    {"number": SPOOF, "category": "agent", "client_id": f"s{i}"},
+                    ip=f"9.9.9.{i}, 55.55.55.55")
+    ok("XFF spoof stays 1 network / watch", b["status"] == "watch" and b["networks"] == 1)
+
+    # ---- moderation: admin routes require a valid bearer token ----
+    server.ADMIN_TOKEN = "test-admin"
+    s, _ = _req(base, "/api/admin/disputes")
+    ok("admin list without token -> 401", s == 401)
+    s, _ = _req(base, "/api/admin/disputes", token="wrong")
+    ok("admin list wrong token -> 401", s == 401)
+    s, b = _req(base, "/api/admin/disputes", token="test-admin")
+    ok("admin list with token -> 200", s == 200 and "disputes" in b)
+
+    # ---- public dispute is recorded and surfaces to the moderator ----
+    s, b = _req(base, "/api/dispute", "POST",
+                {"number": NUM, "reason": "my real shop line", "contact": "x@y.gh"}, ip="88.0.0.9")
+    ok("dispute accepted (201)", s == 201 and b["ok"])
+    s, b = _req(base, "/api/admin/disputes", token="test-admin")
+    ok("dispute shows in admin queue", any(d["number"] == NUM for d in b["disputes"]))
+
+    # ---- whitelist clears a number and blocks new reports ----
+    s, b = _req(base, "/api/admin/whitelist", "POST",
+                {"number": NUM, "reason": "verified business"}, token="test-admin")
+    ok("admin whitelist -> cleared", s == 200 and b["status"] == "cleared")
+    s, b = _req(base, "/api/lookup?number=" + NUM)
+    ok("whitelisted lookup -> cleared, 0 reporters", b["status"] == "cleared" and b["reporters"] == 0)
+    s, b = _req(base, "/api/report", "POST", {"number": NUM, "client_id": "new1"}, ip="70.0.0.1")
+    ok("report on whitelisted stays cleared", b["status"] == "cleared")
+    s, b = _req(base, "/api/admin/disputes", token="test-admin")
+    ok("whitelist resolves the dispute", all(d["number"] != NUM for d in b["disputes"]))
+
+    server.ADMIN_TOKEN = ""  # leave module state as we found it
 
     srv.shutdown()
     print("\n".join(results))

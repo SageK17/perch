@@ -1,7 +1,7 @@
 /* SikaSafe service worker — offline-first app shell.
    The whole point is that it works with no data and no signal, so we
    pre-cache everything and serve from cache first. */
-const CACHE = 'sikasafe-v2';
+const CACHE = 'sikasafe-v3';
 const ASSETS = [
   './',
   'index.html',
@@ -12,6 +12,10 @@ const ASSETS = [
   'js/app.js',
   'manifest.webmanifest',
   'icons/favicon.svg',
+  'icons/icon-192.png',
+  'icons/icon-512.png',
+  'icons/maskable-192.png',
+  'icons/maskable-512.png',
 ];
 
 self.addEventListener('install', (e) => {

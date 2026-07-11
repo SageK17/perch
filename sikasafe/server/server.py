@@ -30,6 +30,7 @@ Runs anywhere Python runs (Render, Railway, Fly.io, a VPS). No build, no deps.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -45,10 +46,28 @@ FLAG_THRESHOLD = int(os.environ.get("SIKA_FLAG_THRESHOLD", "3"))   # distinct re
 MIN_NETWORKS = int(os.environ.get("SIKA_MIN_NETWORKS", "2"))       # distinct IPs to flag
 RATE_PER_HOUR = int(os.environ.get("SIKA_RATE_PER_HOUR", "20"))    # reports/reporter/hour
 RATE_PER_IP = int(os.environ.get("SIKA_RATE_PER_IP", "60"))        # reports/IP/hour
+DISPUTE_RATE_PER_IP = int(os.environ.get("SIKA_DISPUTE_RATE_PER_IP", "10"))  # disputes/IP/hour
 NOTE_MAX = 280
 CATEGORIES = {"reverse", "agent", "promo", "code", "simswap", "fee", "other"}
 
 _SALT = os.environ.get("SIKA_SALT", "sikasafe-reporter-salt-v1").encode()
+
+# CORS: lock to your app's origin in production (e.g. https://sikasafe.pages.dev).
+# "*" keeps the community API openly readable, which is a defensible default for
+# a public-good blocklist, but set SIKA_ALLOW_ORIGIN once you have a domain.
+ALLOW_ORIGIN = os.environ.get("SIKA_ALLOW_ORIGIN", "*")
+
+# Number of proxy hops your platform puts in front of this app (Render/Railway/
+# Fly all add exactly one load-balancer hop). The client IP is read from that
+# many entries in from the RIGHT of X-Forwarded-For — the only part your proxy
+# controls. A client can forge the left of XFF, so trusting it would let one
+# machine fake many "networks" and defeat the anti-poisoning rule. Set to 0 only
+# when the app is exposed directly with no proxy (uses the socket IP).
+TRUSTED_PROXY_HOPS = int(os.environ.get("SIKA_TRUSTED_PROXY_HOPS", "1"))
+
+# Bearer token for /api/admin/* (moderation). Admin routes are DISABLED unless
+# this is set. Generate a long random value and keep it secret.
+ADMIN_TOKEN = os.environ.get("SIKA_ADMIN_TOKEN", "")
 
 
 # ---- storage ---------------------------------------------------------------
@@ -76,6 +95,29 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_number ON reports(number)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reporter ON reports(reporter, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_iphash ON reports(ip_hash, created_at)")
+        # Numbers a moderator has reviewed and cleared (e.g. a real business or
+        # short code wrongly reported). Whitelisted numbers always look up as
+        # "cleared" and cannot be re-reported.
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS whitelist (
+                 number TEXT PRIMARY KEY,
+                 reason TEXT,
+                 created_at REAL NOT NULL
+               )"""
+        )
+        # Someone contesting a flag on a number, queued for moderator review.
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS disputes (
+                 id INTEGER PRIMARY KEY,
+                 number TEXT NOT NULL,
+                 reason TEXT,
+                 contact TEXT,
+                 ip_hash TEXT NOT NULL DEFAULT '',
+                 created_at REAL NOT NULL,
+                 resolved INTEGER NOT NULL DEFAULT 0
+               )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_disputes ON disputes(resolved, created_at)")
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -108,7 +150,19 @@ def clean_note(note: str) -> str:
     return note[:NOTE_MAX]
 
 
+def is_whitelisted(conn, number: str) -> bool:
+    return conn.execute("SELECT 1 FROM whitelist WHERE number=?", (number,)).fetchone() is not None
+
+
 def aggregate(conn, number: str) -> dict:
+    # A cleared number never carries reports (they're deleted on whitelisting and
+    # new ones are blocked), so it always reads as reviewed-and-safe.
+    if is_whitelisted(conn, number):
+        return {
+            "number": number, "reporters": 0, "networks": 0, "reports": 0,
+            "categories": {}, "last_reported": None, "status": "cleared",
+            "threshold": FLAG_THRESHOLD,
+        }
     rows = conn.execute(
         "SELECT reporter, ip_hash, category, created_at FROM reports WHERE number=?", (number,)
     ).fetchall()
@@ -144,22 +198,38 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing --
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", ALLOW_ORIGIN)
+        if ALLOW_ORIGIN != "*":
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
         self._cors()
         self.end_headers()
         self.wfile.write(body)
 
     def _client_ip(self) -> str:
-        fwd = self.headers.get("X-Forwarded-For", "")
-        return fwd.split(",")[0].strip() if fwd else (self.client_address[0] or "0.0.0.0")
+        # Trust only the hops our own proxy appends (the RIGHT of the list); the
+        # left is client-supplied and forgeable. See TRUSTED_PROXY_HOPS above.
+        fwd = [p.strip() for p in self.headers.get("X-Forwarded-For", "").split(",") if p.strip()]
+        if TRUSTED_PROXY_HOPS > 0 and len(fwd) >= TRUSTED_PROXY_HOPS:
+            return fwd[-TRUSTED_PROXY_HOPS]
+        return self.client_address[0] or "0.0.0.0"
+
+    def _is_admin(self) -> bool:
+        if not ADMIN_TOKEN:
+            return False
+        auth = self.headers.get("Authorization", "")
+        tok = auth[7:] if auth.startswith("Bearer ") else ""
+        return bool(tok) and hmac.compare_digest(tok, ADMIN_TOKEN)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -209,19 +279,53 @@ class Handler(BaseHTTPRequestHandler):
                 {"number": mask_number(r["number"]), "reporters": r["reporters"], "last_reported": r["last"]}
                 for r in rows
             ]})
+        if u.path == "/api/admin/disputes":
+            if not ADMIN_TOKEN:
+                return self._json({"error": "not found"}, 404)
+            if not self._is_admin():
+                return self._json({"error": "unauthorized"}, 401)
+            with db() as conn:
+                rows = conn.execute(
+                    "SELECT id, number, reason, contact, created_at FROM disputes "
+                    "WHERE resolved=0 ORDER BY created_at DESC LIMIT 200"
+                ).fetchall()
+                out = []
+                for r in rows:
+                    agg = aggregate(conn, r["number"])
+                    out.append({
+                        "id": r["id"], "number": r["number"], "reason": r["reason"],
+                        "contact": r["contact"], "created_at": r["created_at"],
+                        "current_status": agg["status"], "reporters": agg["reporters"],
+                    })
+            return self._json({"disputes": out})
         return self._json({"error": "not found"}, 404)
 
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length > 4096:
+            raise ValueError("payload too large")
+        return json.loads(self.rfile.read(length) or b"{}")
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/report":
-            return self._json({"error": "not found"}, 404)
+        path = urlparse(self.path).path
         try:
-            length = int(self.headers.get("Content-Length", 0))
-            if length > 4096:
-                return self._json({"error": "payload too large"}, 413)
-            data = json.loads(self.rfile.read(length) or b"{}")
+            data = self._read_json()
+        except ValueError:
+            return self._json({"error": "payload too large"}, 413)
         except Exception:
             return self._json({"error": "bad json"}, 400)
+        if not isinstance(data, dict):
+            return self._json({"error": "bad json"}, 400)
 
+        if path == "/api/report":
+            return self._report(data)
+        if path == "/api/dispute":
+            return self._dispute(data)
+        if path in ("/api/admin/remove", "/api/admin/whitelist", "/api/admin/unwhitelist"):
+            return self._admin(path, data)
+        return self._json({"error": "not found"}, 404)
+
+    def _report(self, data):
         number = normalize_number(data.get("number", ""))
         if not number:
             return self._json({"error": "invalid Ghana mobile number"}, 400)
@@ -234,6 +338,11 @@ class Handler(BaseHTTPRequestHandler):
         iph = ip_id(ip)
 
         with db() as conn:
+            # A moderator-cleared number is accepted quietly but never counted.
+            if is_whitelisted(conn, number):
+                agg = aggregate(conn, number)
+                agg["thanks"] = True
+                return self._json(agg, 200)
             recent = conn.execute(
                 "SELECT COUNT(*) c FROM reports WHERE reporter=? AND created_at > ?",
                 (rep, time.time() - 3600),
@@ -255,6 +364,58 @@ class Handler(BaseHTTPRequestHandler):
         agg["thanks"] = True
         return self._json(agg, 201)
 
+    def _dispute(self, data):
+        """A wrongly-flagged party contests a number; queued for moderator review."""
+        number = normalize_number(data.get("number", ""))
+        if not number:
+            return self._json({"error": "invalid Ghana mobile number"}, 400)
+        reason = clean_note(data.get("reason", ""))
+        contact = clean_note(data.get("contact", ""))[:120]
+        iph = ip_id(self._client_ip())
+        with db() as conn:
+            recent = conn.execute(
+                "SELECT COUNT(*) c FROM disputes WHERE ip_hash=? AND created_at > ?",
+                (iph, time.time() - 3600),
+            ).fetchone()["c"]
+            if recent >= DISPUTE_RATE_PER_IP:
+                return self._json({"error": "rate limit reached, try later"}, 429)
+            conn.execute(
+                "INSERT INTO disputes(number, reason, contact, ip_hash, created_at) VALUES(?,?,?,?,?)",
+                (number, reason, contact, iph, time.time()),
+            )
+            conn.commit()
+        return self._json({"ok": True, "received": True}, 201)
+
+    def _admin(self, path, data):
+        if not ADMIN_TOKEN:
+            return self._json({"error": "not found"}, 404)
+        if not self._is_admin():
+            return self._json({"error": "unauthorized"}, 401)
+        number = normalize_number(data.get("number", ""))
+        if not number:
+            return self._json({"error": "invalid Ghana mobile number"}, 400)
+        with db() as conn:
+            if path == "/api/admin/remove":
+                cur = conn.execute("DELETE FROM reports WHERE number=?", (number,))
+                conn.commit()
+                return self._json({"ok": True, "number": number, "removed": cur.rowcount})
+            if path == "/api/admin/whitelist":
+                reason = clean_note(data.get("reason", ""))
+                conn.execute("DELETE FROM reports WHERE number=?", (number,))
+                conn.execute(
+                    "INSERT INTO whitelist(number, reason, created_at) VALUES(?,?,?) "
+                    "ON CONFLICT(number) DO UPDATE SET reason=excluded.reason",
+                    (number, reason, time.time()),
+                )
+                conn.execute("UPDATE disputes SET resolved=1 WHERE number=?", (number,))
+                conn.commit()
+                return self._json({"ok": True, "number": number, "status": "cleared"})
+            if path == "/api/admin/unwhitelist":
+                cur = conn.execute("DELETE FROM whitelist WHERE number=?", (number,))
+                conn.commit()
+                return self._json({"ok": True, "number": number, "removed": cur.rowcount})
+        return self._json({"error": "not found"}, 404)
+
 
 def make_server(port=PORT):
     init_db()
@@ -264,7 +425,8 @@ def make_server(port=PORT):
 if __name__ == "__main__":
     srv = make_server()
     print(f"SikaSafe community backend on :{srv.server_address[1]}  (db={DB_PATH}, "
-          f"flag>={FLAG_THRESHOLD} reporters)")
+          f"flag>={FLAG_THRESHOLD} reporters/{MIN_NETWORKS} networks, "
+          f"proxy_hops={TRUSTED_PROXY_HOPS}, admin={'on' if ADMIN_TOKEN else 'off'})")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

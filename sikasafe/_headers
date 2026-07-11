@@ -1,0 +1,24 @@
+# Security headers for static hosts that read a `_headers` file
+# (Cloudflare Pages, Netlify). Applied to the SikaSafe PWA.
+#
+# CSP notes:
+#  - script-src 'self'      — every script is an external file; no inline JS, so
+#                             no 'unsafe-inline' is needed (a strong default).
+#  - style-src 'unsafe-inline' — required for inline style attributes (the risk
+#                             meter width and the hidden SVG sprite).
+#  - connect-src https:     — the community API runs on a separate HTTPS origin
+#                             the user configures, so allow HTTPS fetches.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https:; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# The service worker and entry page must revalidate so updates reach users fast.
+/sw.js
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache

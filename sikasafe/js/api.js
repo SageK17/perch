@@ -52,9 +52,14 @@ const report = (o) => fetchJSON('/api/report', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ ...o, client_id: clientId() }),
 });
+// Contest a flag on a number — queued for a moderator, never changes status by itself.
+const dispute = (o) => fetchJSON('/api/dispute', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(o),
+});
 function setBase(url) {
   try { url ? localStorage.setItem(LS_API, url.replace(/\/+$/, '')) : localStorage.removeItem(LS_API); } catch {}
 }
 
-window.SikaApi = { available, base, setBase, lookup, report, stats, recent, clientId };
+window.SikaApi = { available, base, setBase, lookup, report, dispute, stats, recent, clientId };
 })();

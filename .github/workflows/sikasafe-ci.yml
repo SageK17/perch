@@ -1,0 +1,79 @@
+name: SikaSafe CI
+
+# Runs on changes to the SikaSafe app or backend. Fast and dependency-free:
+# the backend is Python stdlib only and the frontend is vanilla JS.
+on:
+  push:
+    paths:
+      - 'sikasafe/**'
+      - '.github/workflows/sikasafe-ci.yml'
+  pull_request:
+    paths:
+      - 'sikasafe/**'
+      - '.github/workflows/sikasafe-ci.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Backend tests
+        run: python3 sikasafe/server/test_server.py
+
+      - name: Frontend JS syntax
+        run: |
+          for f in sikasafe/js/*.js sikasafe/sw.js; do
+            node --check "$f" && echo "ok  $f"
+          done
+
+      - name: Validate JSON (manifest)
+        run: node -e "JSON.parse(require('fs').readFileSync('sikasafe/manifest.webmanifest','utf8')); console.log('manifest ok')"
+
+      - name: End-to-end API smoke
+        run: |
+          set -euo pipefail
+          cd sikasafe/server
+          SIKA_DB=/tmp/ci.db PORT=8799 SIKA_SALT=ci \
+            SIKA_ADMIN_TOKEN=citoken SIKA_TRUSTED_PROXY_HOPS=1 \
+            python3 server.py &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8799/api/health && break; sleep 0.3; done
+
+          echo "health:"; curl -sf http://127.0.0.1:8799/api/health | grep -q '"ok": true'
+
+          echo "flag across 3 networks:"
+          for ip in 1 2 3; do
+            curl -sf -X POST http://127.0.0.1:8799/api/report \
+              -H 'Content-Type: application/json' -H "X-Forwarded-For: 41.0.0.$ip" \
+              -d "{\"number\":\"0244000001\",\"category\":\"agent\",\"client_id\":\"c$ip\"}" >/dev/null
+          done
+          curl -sf "http://127.0.0.1:8799/api/lookup?number=0244000001" | grep -q '"status": "flagged"'
+
+          echo "XFF spoof stays watch (forged left, one trusted right):"
+          for ip in 1 2 3; do
+            curl -sf -X POST http://127.0.0.1:8799/api/report \
+              -H 'Content-Type: application/json' -H "X-Forwarded-For: 9.9.9.$ip, 55.55.55.55" \
+              -d "{\"number\":\"0209090909\",\"category\":\"agent\",\"client_id\":\"x$ip\"}" >/dev/null
+          done
+          curl -sf "http://127.0.0.1:8799/api/lookup?number=0209090909" | grep -q '"status": "watch"'
+
+          echo "admin auth required (no token -> 401):"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8799/api/admin/disputes)" = "401"
+
+          echo "admin whitelist clears a number:"
+          curl -sf -X POST http://127.0.0.1:8799/api/admin/whitelist \
+            -H 'Authorization: Bearer citoken' -H 'Content-Type: application/json' \
+            -d '{"number":"0244000001","reason":"ci"}' | grep -q '"status": "cleared"'
+          curl -sf "http://127.0.0.1:8799/api/lookup?number=0244000001" | grep -q '"status": "cleared"'
+
+          echo "all smoke checks passed"
