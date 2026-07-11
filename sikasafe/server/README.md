@@ -39,6 +39,9 @@ A lookup aggregate looks like:
 - **Distinct-reporter threshold** — a number is only shown as *flagged* once
   several different people report it, so one malicious report can't brand a
   number. 1–2 reports show as *watch*.
+- **Distinct-network requirement** — flagging also needs reports from several
+  different networks (IP addresses), so one machine rotating `client_id`s can't
+  falsely flag a number. Per-IP write rate limiting backs this up.
 - **Per-reporter de-duplication** — a client can't inflate a count by reporting
   the same number twice (`UNIQUE(number, reporter)`).
 - **Privacy** — reporter identity is a salted hash of (client id + IP), never
@@ -54,7 +57,9 @@ A lookup aggregate looks like:
 | `PORT` | `8791` | listen port |
 | `SIKA_DB` | `sikasafe.db` | SQLite file path |
 | `SIKA_FLAG_THRESHOLD` | `3` | distinct reporters to reach `flagged` |
+| `SIKA_MIN_NETWORKS` | `2` | distinct networks (IPs) also required to `flag` |
 | `SIKA_RATE_PER_HOUR` | `20` | reports per reporter per hour |
+| `SIKA_RATE_PER_IP` | `60` | reports per IP per hour |
 | `SIKA_SALT` | (built-in) | **set your own** — salts reporter hashes |
 
 ## Deploy free

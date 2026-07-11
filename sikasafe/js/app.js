@@ -6,7 +6,7 @@
 'use strict';
 
 const { UI, RULES, SCAMS, SITUATIONS, CONTACTS, EMERGENCY, LOCALES, t } = window.SikaData;
-const { analyzeText, normNumber } = window.SikaDetector;
+const { analyzeText, normNumber, extractContacts } = window.SikaDetector;
 const api = window.SikaApi;
 
 const REPORTS_KEY = 'sikasafe.reports.v1';
@@ -71,7 +71,7 @@ function renderCheck() {
       <button id="btn-analyze" class="btn primary">${ico('shield')} ${esc(t(UI.analyze))}</button>
       <button id="btn-clear" class="btn ghost">${esc(t(UI.clear))}</button>
     </div>
-    <div id="result" class="result" hidden></div>
+    <div id="result" class="result" role="status" aria-live="polite" hidden></div>
     <p class="or">${esc(t(UI.orPick))}</p>
     <div class="chips">
       ${SITUATIONS.map((s) => { const sc = SCAMS.find((x) => x.id === s.id);
@@ -91,7 +91,7 @@ function renderCheck() {
   $('#btn-analyze').addEventListener('click', () => {
     const text = $('#msg').value.trim();
     if (!text) { $('#msg').focus(); return; }
-    showResult(analyzeText(text));
+    showResult(analyzeText(text), text);
   });
   $('#btn-clear').addEventListener('click', () => {
     $('#msg').value = ''; $('#result').hidden = true; $('#msg').focus();
@@ -111,15 +111,56 @@ function verdictCard(level, title, line, bodyHtml) {
   </div>`;
 }
 
-function showResult(a) {
+function showResult(a, text) {
   const flags = a.hits.length
     ? `<div class="flags"><p class="flags-h">${a.hits.length} warning sign${a.hits.length > 1 ? 's' : ''} found:</p>
         ${a.hits.map((h) => `<div class="flag"><b>${ico('warn', 'ic sm')} ${esc(t(h.flag))}</b><span>${esc(t(h.advice))}</span></div>`).join('')}</div>`
     : `<div class="flags"><p class="flags-h">No known scam phrases were detected in the text.</p></div>`;
+
+  let extra = '';
+  const c = extractContacts(text || '');
+  if (c.numbers.length || c.shortcodes.length) {
+    const nums = c.numbers.map((n) => `<div class="numrow"><b>${esc(n)}</b><span class="numacts">
+        <button class="btn tiny" data-lookup="${esc(n)}">${ico('search', 'ic sm')} Look up</button>
+        <button class="btn tiny" data-report="${esc(n)}">${ico('flag', 'ic sm')} Report</button></span></div>`).join('');
+    const shs = c.shortcodes.map((s) => `<div class="numrow"><b>${esc(s)}</b>
+        <span class="muted small">code — never dial codes from strangers</span></div>`).join('');
+    extra += `<div class="numbers"><p class="lbl">${ico('dial', 'ic sm')} Numbers in this message</p>${nums}${shs}</div>`;
+  }
+  if (a.verdict.level !== 'clear') {
+    extra += `<button class="btn ghost warnbtn" id="btn-warn">${ico('share')} Warn others about this</button>`;
+  }
+
   const box = $('#result');
-  box.innerHTML = verdictCard(a.verdict.level, t(a.verdict.title), t(a.verdict.line), flags);
+  box.innerHTML = verdictCard(a.verdict.level, t(a.verdict.title), t(a.verdict.line), flags + extra);
   box.hidden = false;
+  box.querySelectorAll('[data-lookup]').forEach((b) => b.addEventListener('click', () => lookupFromCheck(b.dataset.lookup)));
+  box.querySelectorAll('[data-report]').forEach((b) => b.addEventListener('click', () => reportFromCheck(b.dataset.report)));
+  const w = box.querySelector('#btn-warn');
+  if (w) w.addEventListener('click', () => shareWarning(a));
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function lookupFromCheck(num) {
+  setView('report');
+  const el = $('#lookup-num');
+  if (el) { el.value = num; doLookup(); el.scrollIntoView({ block: 'center' }); }
+}
+
+function reportFromCheck(num) {
+  setView('report');
+  const form = document.querySelector('.report-form');
+  if (form) form.open = true;
+  const el = $('#rep-num');
+  if (el) { el.value = num; el.focus(); el.scrollIntoView({ block: 'center' }); }
+}
+
+async function shareWarning(a) {
+  const signs = a.hits.slice(0, 3).map((h) => '• ' + t(h.flag)).join('\n');
+  const text = `⚠️ Possible scam (checked with SikaSafe)\n${t(a.verdict.title)}. ${t(a.verdict.line)}\n${signs}\nReport fraud to CSA: call/SMS 292.`;
+  try { if (navigator.share) { await navigator.share({ title: 'SikaSafe warning', text }); return; } } catch {}
+  try { await navigator.clipboard.writeText(text); toast('Warning copied — paste into WhatsApp'); }
+  catch { toast('Could not share on this device'); }
 }
 
 function showSituation(id) {
@@ -177,7 +218,7 @@ function renderReport() {
       <input id="lookup-num" class="inp" inputmode="tel" placeholder="${esc(t(UI.lookupPlaceholder))}">
       <button id="btn-lookup" class="btn primary">${ico('search')} ${esc(t(UI.lookup))}</button>
     </div>
-    <div id="lookup-result"></div>
+    <div id="lookup-result" role="status" aria-live="polite"></div>
     <details class="report-form">
       <summary>${ico('flag')} ${esc(t(UI.reportNumber))}</summary>
       <div class="rf-inner">
@@ -194,6 +235,7 @@ function renderReport() {
       ${reports.length ? reports.slice().reverse().map(reportRow).join('')
         : `<p class="muted">No reports yet. When someone scams you, add the number here.</p>`}
     </div>
+    <div id="recent-list" class="recent-list"></div>
     <details class="server-ctl">
       <summary>${ico('globe')} Community server</summary>
       <div class="rf-inner">
@@ -213,7 +255,7 @@ function renderReport() {
     b.addEventListener('click', () => { const r = getReports(); r.splice(+b.dataset.del, 1); saveReports(r); renderReport(); }));
   $('#srv-save').addEventListener('click', () => { api.setBase($('#srv-url').value.trim()); renderReport(); toast(api.available() ? 'Community server connected' : 'Saved'); });
   $('#srv-clear').addEventListener('click', () => { api.setBase(''); renderReport(); toast('Disconnected — offline mode'); });
-  if (on) loadCommunityStats();
+  if (on) { loadCommunityStats(); loadRecent(); }
 }
 
 async function loadCommunityStats() {
@@ -222,6 +264,19 @@ async function loadCommunityStats() {
     const s = await api.stats();
     if (el) el.textContent = ` · ${s.flagged} flagged, ${s.total_reports} report${s.total_reports === 1 ? '' : 's'}`;
   } catch { if (el) el.textContent = ' · server unreachable'; }
+}
+
+async function loadRecent() {
+  const el = $('#recent-list');
+  if (!el) return;
+  try {
+    const r = await api.recent();
+    if (!r.recent || !r.recent.length) { el.innerHTML = ''; return; }
+    el.innerHTML = `<p class="lbl">${ico('globe', 'ic sm')} Recently flagged by the community</p>` +
+      r.recent.map((x) => `<div class="rep flagged"><div><b>${esc(x.number)}</b>
+        <span>${x.reporters} reporter${x.reporters === 1 ? '' : 's'}</span></div>
+        <span class="badge-flag">flagged</span></div>`).join('');
+  } catch { el.innerHTML = ''; }
 }
 
 function serverNote() {

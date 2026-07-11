@@ -91,7 +91,8 @@ const RULES_DETECT = [
   {
     id: 'urgency', cat: null, weight: 2,
     re: [/urgent/i, /immediately/i, /right now/i, /within \d+\s*(min|hour|hr)/i,
-         /last chance/i, /hurry/i, /\basap\b/i, /act now/i, /quickly/i, /don'?t (tell|delay)/i],
+         /last chance/i, /hurry/i, /\basap\b/i, /act now/i, /quickly/i, /don'?t (tell|delay)/i,
+         /sharp[\s-]?sharp/i, /now now/i, /do (am |it )?fast/i, /quick quick/i],
     flag: { en: 'It pressures you to act urgently.',
             pcm: 'E dey pressure you make you act urgent.' },
     advice: { en: 'Urgency is a tool to stop you thinking. Slow down and verify — real matters can wait a few minutes.',
@@ -105,6 +106,33 @@ const RULES_DETECT = [
             pcm: 'E get link, e fit be shortened or strange one.' },
     advice: { en: 'Do not tap links in unexpected messages. They can steal your details. Type official addresses yourself.',
               pcm: 'No tap link for message wey you no expect. E fit thief your details. Type official address yourself.' },
+  },
+  {
+    id: 'courier', cat: 'fee', weight: 3,
+    re: [/parcel|package|shipment|courier|\bdhl\b|\bdpd\b|customs|held (at|for)/i,
+         /delivery.{0,20}(pending|failed|fee|charge)/i, /pay.{0,20}(customs|clearance|delivery)/i],
+    flag: { en: 'It mentions a parcel/delivery that needs a payment.',
+            pcm: 'E mention parcel/delivery wey need payment.' },
+    advice: { en: 'Couriers do not text you to pay a MoMo fee to release a package. Verify with the official company; do not pay.',
+              pcm: 'Courier no dey text you make you pay MoMo fee before dem release package. Verify with the official company; no pay.' },
+  },
+  {
+    id: 'invest', cat: 'fee', weight: 3,
+    re: [/double your money/i, /invest(ment)?/i, /\bforex\b/i, /crypto|bitcoin|\busdt\b/i,
+         /guaranteed (profit|return|income)/i, /profit (daily|weekly)/i, /fixed odds/i, /ponzi/i],
+    flag: { en: 'It promises quick or guaranteed profit.',
+            pcm: 'E promise quick or guaranteed profit.' },
+    advice: { en: '“Double your money” and guaranteed-return schemes are scams. No real investment is guaranteed.',
+              pcm: '“Double your money” and guaranteed-return scheme na scam. No real investment dey guaranteed.' },
+  },
+  {
+    id: 'emergency', cat: null, weight: 3,
+    re: [/(son|daughter|mother|father|brother|sister|husband|wife|child|uncle|aunt|friend).{0,40}(hospital|accident|arrested|stranded|trouble|emergency|sick|died)/i,
+         /i(?:'m| am) (stranded|stuck|in trouble)/i, /send (me )?money (now|urgently|quickly|fast)/i],
+    flag: { en: 'It claims an emergency and urgently needs money.',
+            pcm: 'E claim emergency and dey urgently need money.' },
+    advice: { en: 'Call the person directly on their known number to confirm before sending anything — impersonation is common.',
+              pcm: 'Call the person direct for the number wey you know before you send anything — impersonation dey common.' },
   },
 ];
 
@@ -156,5 +184,21 @@ function normNumber(raw) {
   return n;
 }
 
-window.SikaDetector = { analyzeText, normNumber, RULES_DETECT, VERDICTS };
+/* Pull phone numbers and USSD short codes out of a message, so the Check
+   screen can offer to look them up or report them. */
+function extractContacts(text) {
+  const numbers = new Set();
+  const shortcodes = new Set();
+  let m;
+  const numRe = /(?:\+?233|0)\s?\d(?:[\s-]?\d){8}/g;
+  while ((m = numRe.exec(text))) {
+    const n = normNumber(m[0]);
+    if (/^0[25]\d{8}$/.test(n)) numbers.add(n);
+  }
+  const shRe = /\*\d{2,}[\d*]*#/g;
+  while ((m = shRe.exec(text))) shortcodes.add(m[0]);
+  return { numbers: [...numbers], shortcodes: [...shortcodes] };
+}
+
+window.SikaDetector = { analyzeText, normNumber, extractContacts, RULES_DETECT, VERDICTS };
 })();

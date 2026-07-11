@@ -223,8 +223,27 @@ a.cline b{color:var(--green-d)}
   display:flex;align-items:center;gap:9px;list-style:none}
 .server-ctl>summary::-webkit-details-marker{display:none}
 
+/* detected numbers in a Check result */
+.numbers{margin-top:12px}
+.numrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:rgba(255,255,255,.6);border-radius:10px;padding:9px 12px;margin-top:7px}
+.numrow>b{font-variant-numeric:tabular-nums}
+.numacts{margin-left:auto;display:flex;gap:7px}
+.warnbtn{width:100%;margin-top:12px;justify-content:center}
+
+/* recently-flagged community list */
+.recent-list{margin-top:18px}
+.rep.flagged{border-color:#f2c4c4}
+.badge-flag{margin-left:auto;background:var(--danger-bg);color:var(--danger);
+  font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px}
+
 /* focus visibility */
 :focus-visible{outline:3px solid var(--gold);outline-offset:2px;border-radius:8px}
+
+@media (prefers-reduced-motion: reduce){
+  *,.meter span{transition:none !important}
+  .loading .ic{animation:none}
+}
 
 /* dark mode */
 @media (prefers-color-scheme: dark){
@@ -237,7 +256,7 @@ a.cline b{color:var(--green-d)}
   }
   .btn.ghost,.btn.tiny,.msg,.inp,.rep,.tabbar{background:var(--card)}
   .lang{background:rgba(255,255,255,.14)}
-  .flag{background:rgba(255,255,255,.06)}
+  .flag,.numrow{background:rgba(255,255,255,.06)}
   .meter{background:rgba(255,255,255,.1)}
   .commbar.off{background:#141c18}
   .ri,.scam .ri{background:#12271d}

@@ -47,6 +47,7 @@ async function fetchJSON(path, opts = {}, ms = 6000) {
 
 const lookup = (number) => fetchJSON('/api/lookup?number=' + encodeURIComponent(number));
 const stats = () => fetchJSON('/api/stats');
+const recent = () => fetchJSON('/api/recent');
 const report = (o) => fetchJSON('/api/report', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ ...o, client_id: clientId() }),
@@ -55,5 +56,5 @@ function setBase(url) {
   try { url ? localStorage.setItem(LS_API, url.replace(/\/+$/, '')) : localStorage.removeItem(LS_API); } catch {}
 }
 
-window.SikaApi = { available, base, setBase, lookup, report, stats, clientId };
+window.SikaApi = { available, base, setBase, lookup, report, stats, recent, clientId };
 })();

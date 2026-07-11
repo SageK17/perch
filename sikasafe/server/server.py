@@ -42,7 +42,9 @@ from urllib.parse import urlparse, parse_qs
 DB_PATH = os.environ.get("SIKA_DB", "sikasafe.db")
 PORT = int(os.environ.get("PORT", "8791"))
 FLAG_THRESHOLD = int(os.environ.get("SIKA_FLAG_THRESHOLD", "3"))   # distinct reporters
+MIN_NETWORKS = int(os.environ.get("SIKA_MIN_NETWORKS", "2"))       # distinct IPs to flag
 RATE_PER_HOUR = int(os.environ.get("SIKA_RATE_PER_HOUR", "20"))    # reports/reporter/hour
+RATE_PER_IP = int(os.environ.get("SIKA_RATE_PER_IP", "60"))        # reports/IP/hour
 NOTE_MAX = 280
 CATEGORIES = {"reverse", "agent", "promo", "code", "simswap", "fee", "other"}
 
@@ -66,12 +68,14 @@ def init_db():
                  category TEXT NOT NULL,
                  note TEXT,
                  reporter TEXT NOT NULL,
+                 ip_hash TEXT NOT NULL DEFAULT '',
                  created_at REAL NOT NULL,
                  UNIQUE(number, reporter)
                )"""
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_number ON reports(number)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_reporter ON reports(reporter, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_iphash ON reports(ip_hash, created_at)")
 
 
 # ---- helpers ---------------------------------------------------------------
@@ -91,6 +95,10 @@ def reporter_id(client_id: str, ip: str) -> str:
     return hashlib.sha256(_SALT + (client_id or "").encode() + b"|" + ip.encode()).hexdigest()[:32]
 
 
+def ip_id(ip: str) -> str:
+    return hashlib.sha256(_SALT + b"ip|" + ip.encode()).hexdigest()[:32]
+
+
 def mask_number(n: str) -> str:
     return n[:3] + "•••" + n[-3:] if len(n) >= 7 else "•••"
 
@@ -102,17 +110,26 @@ def clean_note(note: str) -> str:
 
 def aggregate(conn, number: str) -> dict:
     rows = conn.execute(
-        "SELECT reporter, category, created_at FROM reports WHERE number=?", (number,)
+        "SELECT reporter, ip_hash, category, created_at FROM reports WHERE number=?", (number,)
     ).fetchall()
     reporters = {r["reporter"] for r in rows}
+    networks = {r["ip_hash"] for r in rows if r["ip_hash"]}
     cats: dict = {}
     for r in rows:
         cats[r["category"]] = cats.get(r["category"], 0) + 1
-    n = len(reporters)
-    status = "flagged" if n >= FLAG_THRESHOLD else "watch" if n >= 1 else "clean"
+    n, nets = len(reporters), len(networks)
+    # Flag only with enough distinct reporters AND across enough distinct
+    # networks, so one machine rotating client ids can't brand a number.
+    if n >= FLAG_THRESHOLD and nets >= MIN_NETWORKS:
+        status = "flagged"
+    elif n >= 1:
+        status = "watch"
+    else:
+        status = "clean"
     return {
         "number": number,
         "reporters": n,
+        "networks": nets,
         "reports": len(rows),
         "categories": cats,
         "last_reported": max((r["created_at"] for r in rows), default=None),
@@ -170,7 +187,8 @@ class Handler(BaseHTTPRequestHandler):
                 numbers = conn.execute("SELECT COUNT(DISTINCT number) c FROM reports").fetchone()["c"]
                 flagged = conn.execute(
                     "SELECT COUNT(*) c FROM (SELECT number FROM reports GROUP BY number "
-                    "HAVING COUNT(DISTINCT reporter) >= ?)", (FLAG_THRESHOLD,)
+                    "HAVING COUNT(DISTINCT reporter) >= ? AND COUNT(DISTINCT ip_hash) >= ?)",
+                    (FLAG_THRESHOLD, MIN_NETWORKS)
                 ).fetchone()["c"]
                 cats = conn.execute(
                     "SELECT category, COUNT(*) c FROM reports GROUP BY category ORDER BY c DESC"
@@ -184,7 +202,8 @@ class Handler(BaseHTTPRequestHandler):
                 rows = conn.execute(
                     "SELECT number, COUNT(DISTINCT reporter) reporters, MAX(created_at) last "
                     "FROM reports GROUP BY number HAVING reporters >= ? "
-                    "ORDER BY last DESC LIMIT 20", (FLAG_THRESHOLD,)
+                    "AND COUNT(DISTINCT ip_hash) >= ? ORDER BY last DESC LIMIT 20",
+                    (FLAG_THRESHOLD, MIN_NETWORKS)
                 ).fetchall()
             return self._json({"recent": [
                 {"number": mask_number(r["number"]), "reporters": r["reporters"], "last_reported": r["last"]}
@@ -210,7 +229,9 @@ class Handler(BaseHTTPRequestHandler):
         if category not in CATEGORIES:
             category = "other"
         note = clean_note(data.get("note", ""))
-        rep = reporter_id(data.get("client_id", ""), self._client_ip())
+        ip = self._client_ip()
+        rep = reporter_id(data.get("client_id", ""), ip)
+        iph = ip_id(ip)
 
         with db() as conn:
             recent = conn.execute(
@@ -219,9 +240,15 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()["c"]
             if recent >= RATE_PER_HOUR:
                 return self._json({"error": "rate limit reached, try later"}, 429)
+            ip_recent = conn.execute(
+                "SELECT COUNT(*) c FROM reports WHERE ip_hash=? AND created_at > ?",
+                (iph, time.time() - 3600),
+            ).fetchone()["c"]
+            if ip_recent >= RATE_PER_IP:
+                return self._json({"error": "rate limit reached, try later"}, 429)
             conn.execute(
-                "INSERT OR IGNORE INTO reports(number, category, note, reporter, created_at) "
-                "VALUES(?,?,?,?,?)", (number, category, note, rep, time.time()),
+                "INSERT OR IGNORE INTO reports(number, category, note, reporter, ip_hash, created_at) "
+                "VALUES(?,?,?,?,?,?)", (number, category, note, rep, iph, time.time()),
             )
             conn.commit()
             agg = aggregate(conn, number)
