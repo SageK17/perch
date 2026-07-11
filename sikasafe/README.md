@@ -36,8 +36,10 @@ Sources: [The Fourth Estate](https://thefourthestategh.com/2025/10/mobile-money-
 - **Learn** — the scams doing the rounds in Ghana (fake "wrong transfer", fake
   agent/customer-care, promo/prize, dial-a-code, SIM-swap, pay-a-fee-first),
   each with how it works, its warning signs, and how to beat it.
-- **Reports** — flag a scam number and look numbers up (stored on your phone;
-  see *Limitations* for turning this into a shared community list).
+- **Reports** — flag a scam number and look numbers up. Offline, reports stay on
+  your phone; connect a **community server** (below) and lookups/reports use a
+  shared, crowd-sourced blocklist — a number is shown as *flagged* only once
+  several different people report it.
 - **Help** — "Scammed? Do this now" step-by-step, plus one-tap official
   contacts to freeze your wallet and report.
 
@@ -70,6 +72,22 @@ python3 -m http.server 8000   # then open http://localhost:8000
 Deploy free on GitHub Pages or Netlify (a `netlify.toml` is included). It's a
 PWA: on a phone, "Add to Home Screen" installs it, and it then works offline.
 
+## Community mode (optional)
+
+The app is fully useful offline. To make scam-number reports **shared across the
+whole community**, run the small backend in [`server/`](server/) (dependency-free
+Python + SQLite) and connect the app to it — either set `DEFAULT_API` in
+[`js/api.js`](js/api.js) for everyone, or let each user paste the server URL under
+**Reports → Community server**. See [`server/README.md`](server/README.md) for the
+API and free deploy options (Render / Railway / Fly). The backend only ever
+flags a number once several *distinct* people report it, so one bad report can't
+brand a number.
+
+```bash
+python3 server/server.py          # runs the community API
+python3 server/test_server.py     # 12 backend tests
+```
+
 ## How it's built
 
 100% client-side: vanilla HTML/CSS/JS, no framework, no backend, no tracking.
@@ -83,9 +101,10 @@ so it teaches while it checks. Content lives in [`js/data.js`](js/data.js).
   and "no obvious signs" or "not reported" never means "safe."
 - The analyzer catches known scam **patterns**; new wording can slip past it.
   Always fall back to the golden rules — above all, never share your PIN/OTP.
-- Number reports are **local to your phone**. A genuinely shared community
-  blocklist needs a small backend (e.g. a serverless function + database);
-  the data model is already shaped for that. Contributions welcome.
+- Without a community server, number reports are **local to your phone**. With
+  one, they're shared — but the server is a solid foundation, not a hardened
+  production service (see [`server/README.md`](server/README.md) for the honest
+  limits: moderation/appeals and anti-poisoning hardening are future work).
 - It is an **independent public-safety tool**, not affiliated with any network,
   bank, or agency. Verify contacts against your provider's official materials.
 

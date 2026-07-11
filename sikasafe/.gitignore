@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# SQLite database files (community reports are runtime data, never committed)
+*.db
+*.db-wal
+*.db-shm

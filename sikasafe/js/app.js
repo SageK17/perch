@@ -7,6 +7,7 @@
 
 const { UI, RULES, SCAMS, SITUATIONS, CONTACTS, EMERGENCY, LOCALES, t } = window.SikaData;
 const { analyzeText, normNumber } = window.SikaDetector;
+const api = window.SikaApi;
 
 const REPORTS_KEY = 'sikasafe.reports.v1';
 const LOCALE_KEY = 'sikasafe.locale.v1';
@@ -73,7 +74,8 @@ function renderCheck() {
     <div id="result" class="result" hidden></div>
     <p class="or">${esc(t(UI.orPick))}</p>
     <div class="chips">
-      ${SITUATIONS.map((s) => `<button class="chip" data-scam="${s.id}">${esc(t(s.label))}</button>`).join('')}
+      ${SITUATIONS.map((s) => { const sc = SCAMS.find((x) => x.id === s.id);
+        return `<button class="chip" data-scam="${s.id}"><span class="ci">${ico(sc ? sc.icon : 'warn')}</span><span class="ct">${esc(t(s.label))}</span></button>`; }).join('')}
     </div>
     <div class="rules-card">
       <div class="rules-head">
@@ -100,9 +102,11 @@ function renderCheck() {
 }
 
 function verdictCard(level, title, line, bodyHtml) {
+  const pct = level === 'danger' ? 92 : level === 'caution' ? 58 : 16;
   return `<div class="verdict ${level}">
     <div class="v-head">${ico(level === 'danger' ? 'danger' : level === 'caution' ? 'warn' : 'check')}
       <div><b>${esc(title)}</b><span>${esc(line)}</span></div></div>
+    <div class="meter" aria-hidden="true"><span style="width:${pct}%"></span></div>
     ${bodyHtml || ''}
   </div>`;
 }
@@ -162,9 +166,13 @@ function renderLearn() {
    ============================================================ */
 function renderReport() {
   const reports = getReports();
+  const on = api.available();
   $('#view-report').innerHTML = `
     <h1 class="h-title">${esc(t(UI.reportTitle))}</h1>
     <p class="h-sub">${esc(t(UI.reportSub))}</p>
+    <div class="commbar ${on ? 'on' : 'off'}">${ico('globe', 'ic sm')}
+      <span>${on ? 'Community mode on' : 'Community mode off — reports stay on this phone.'}</span>
+      <span id="commstats" class="cs"></span></div>
     <div class="lookup">
       <input id="lookup-num" class="inp" inputmode="tel" placeholder="${esc(t(UI.lookupPlaceholder))}">
       <button id="btn-lookup" class="btn primary">${ico('search')} ${esc(t(UI.lookup))}</button>
@@ -178,20 +186,97 @@ function renderReport() {
           ${SCAMS.map((s) => `<option value="${s.id}">${esc(t(s.name))}</option>`).join('')}
         </select>
         <textarea id="rep-note" class="inp" rows="2" placeholder="What happened? (optional)"></textarea>
-        <button id="btn-report" class="btn primary">${ico('flag')} Save report</button>
+        <button id="btn-report" class="btn primary">${ico('flag')} Report${on ? ' to community' : ''}</button>
       </div>
     </details>
     <div class="report-list">
       <p class="lbl">${reports.length} report${reports.length === 1 ? '' : 's'} saved on this phone</p>
       ${reports.length ? reports.slice().reverse().map(reportRow).join('')
         : `<p class="muted">No reports yet. When someone scams you, add the number here.</p>`}
-    </div>`;
+    </div>
+    <details class="server-ctl">
+      <summary>${ico('globe')} Community server</summary>
+      <div class="rf-inner">
+        <p class="muted small">Connect a shared SikaSafe server to look up and report scam numbers across the whole community. Leave blank to stay fully offline and private.</p>
+        <input id="srv-url" class="inp" inputmode="url" placeholder="https://your-sikasafe-server" value="${esc(api.base())}">
+        <div class="row">
+          <button id="srv-save" class="btn primary">Connect</button>
+          <button id="srv-clear" class="btn ghost">Disconnect</button>
+        </div>
+      </div>
+    </details>`;
 
   $('#btn-lookup').addEventListener('click', doLookup);
   $('#lookup-num').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLookup(); });
   $('#btn-report').addEventListener('click', doReport);
   $('#view-report').querySelectorAll('[data-del]').forEach((b) =>
     b.addEventListener('click', () => { const r = getReports(); r.splice(+b.dataset.del, 1); saveReports(r); renderReport(); }));
+  $('#srv-save').addEventListener('click', () => { api.setBase($('#srv-url').value.trim()); renderReport(); toast(api.available() ? 'Community server connected' : 'Saved'); });
+  $('#srv-clear').addEventListener('click', () => { api.setBase(''); renderReport(); toast('Disconnected — offline mode'); });
+  if (on) loadCommunityStats();
+}
+
+async function loadCommunityStats() {
+  const el = $('#commstats');
+  try {
+    const s = await api.stats();
+    if (el) el.textContent = ` · ${s.flagged} flagged, ${s.total_reports} report${s.total_reports === 1 ? '' : 's'}`;
+  } catch { if (el) el.textContent = ' · server unreachable'; }
+}
+
+function serverNote() {
+  return `<p class="also muted">Community server unreachable — showing your phone’s reports only.</p>`;
+}
+
+async function doLookup() {
+  const num = normNumber($('#lookup-num').value);
+  const box = $('#lookup-result');
+  if (!num) { box.innerHTML = ''; return; }
+  const localCount = getReports().filter((r) => normNumber(r.number) === num).length;
+  if (api.available()) {
+    box.innerHTML = `<div class="loading">${ico('globe')} Checking the community…</div>`;
+    try {
+      const a = await api.lookup(num);
+      const extra = localCount ? `<p class="also">You also reported this number.</p>` : '';
+      if (a.status === 'flagged')
+        box.innerHTML = verdictCard('danger', `Flagged by ${a.reporters} people`, 'The community has reported this as a scam. Do not send money or share codes.', extra);
+      else if (a.status === 'watch')
+        box.innerHTML = verdictCard('caution', `${a.reporters} early report${a.reporters === 1 ? '' : 's'}`, `Reported by ${a.reporters}, not yet confirmed (needs ${a.threshold}). Be careful.`, extra);
+      else
+        box.innerHTML = verdictCard('clear', 'Not reported by the community', 'No one has flagged this yet — but that is not a guarantee it is safe. Stay careful.', extra);
+      return;
+    } catch { box.innerHTML = localLookupCard(localCount, true); return; }
+  }
+  box.innerHTML = localLookupCard(localCount, false);
+}
+
+function localLookupCard(localCount, offline) {
+  const note = offline ? serverNote() : '';
+  if (localCount)
+    return verdictCard('danger', `Reported ${localCount} time${localCount > 1 ? 's' : ''} on this phone`,
+      'You flagged this number as a scam. Do not send money or share codes.', note);
+  return verdictCard('clear', 'Not in your reports',
+    'That does not mean it is safe — only that you have not flagged it. Stay careful.', note);
+}
+
+async function doReport() {
+  const number = $('#rep-num').value.trim();
+  if (!number) { $('#rep-num').focus(); return; }
+  const type = $('#rep-type').value, note = $('#rep-note').value.trim();
+  const reports = getReports();
+  reports.push({ number, type, note, ts: Date.now() });
+  saveReports(reports);
+  if (api.available()) {
+    try {
+      const a = await api.report({ number, category: type, note });
+      toast(`Reported — now ${a.reporters} reporter${a.reporters === 1 ? '' : 's'}${a.status === 'flagged' ? ' (flagged)' : ''}`);
+    } catch (e) {
+      toast(e && e.status === 400 ? 'Not a valid Ghana mobile number' : 'Saved on phone — server unreachable');
+    }
+  } else {
+    toast('Report saved on this phone');
+  }
+  renderReport();
 }
 
 function reportRow(r, idxFromEnd) {
@@ -202,29 +287,6 @@ function reportRow(r, idxFromEnd) {
     <div><b>${esc(r.number)}</b><span>${scam ? esc(t(scam.name)) : 'Scam'}${r.note ? ' · ' + esc(r.note) : ''}</span></div>
     <button class="icon-btn" data-del="${idx}" aria-label="Delete">${ico('trash')}</button>
   </div>`;
-}
-
-function doLookup() {
-  const num = normNumber($('#lookup-num').value);
-  const box = $('#lookup-result');
-  if (!num) { box.innerHTML = ''; return; }
-  const matches = getReports().filter((r) => normNumber(r.number) === num);
-  if (matches.length) {
-    box.innerHTML = verdictCard('danger', `Reported ${matches.length} time${matches.length > 1 ? 's' : ''} on this phone`,
-      'This number has been flagged as a scam here. Do not send money or share codes.', '');
-  } else {
-    box.innerHTML = verdictCard('clear', 'Not in your reports',
-      'That does not mean it is safe — only that no one has flagged it on this phone. Stay careful.', '');
-  }
-}
-
-function doReport() {
-  const number = $('#rep-num').value.trim();
-  if (!number) { $('#rep-num').focus(); return; }
-  const reports = getReports();
-  reports.push({ number, type: $('#rep-type').value, note: $('#rep-note').value.trim(), ts: Date.now() });
-  saveReports(reports);
-  renderReport();
 }
 
 /* ============================================================
