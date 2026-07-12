@@ -84,10 +84,13 @@ const UI = {
     pcm: 'SikaSafe dey give advice only — e no fit see your MoMo account, and “dem never report am” no mean say e safe. If you no sure, call your network or CSA for 292.',
   },
   gaDraftNote: {
-    en: 'Gã here is an early community draft. Please help us get it right.',
-    pcm: 'This Gã na early community draft. Abeg help us make e correct.',
+    // Shown ALWAYS in English (see the draft ribbon) — a warning about
+    // unverified Gã must itself be in a language the reader can trust.
+    en: 'Gã is an unverified community draft — do not rely on it for safety decisions. English is shown wherever Gã is not ready yet. Help us get it right.',
+    pcm: 'This Gã na unverified community draft — no rely on am for safety decisions. We dey show English wia Gã never ready. Abeg help us make e correct.',
     gaa: 'Gã nɛɛ ji community draft. Ofainɛ ye bua wɔ.', // draft
   },
+  privacy: { en: 'Privacy & your data', pcm: 'Privacy & your data', gaa: 'Privacy & your data' },
 };
 
 /* ---------- The golden rules (the heart of the app) ---------- */

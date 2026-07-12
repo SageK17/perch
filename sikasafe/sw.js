@@ -1,10 +1,11 @@
 /* SikaSafe service worker — offline-first app shell.
    The whole point is that it works with no data and no signal, so we
    pre-cache everything and serve from cache first. */
-const CACHE = 'sikasafe-v3';
+const CACHE = 'sikasafe-v4';
 const ASSETS = [
   './',
   'index.html',
+  'privacy.html',
   'css/styles.css',
   'js/data.js',
   'js/detector.js',

@@ -30,9 +30,28 @@ function saveReports(r) { try { localStorage.setItem(REPORTS_KEY, JSON.stringify
 
 /* ---------- language ---------- */
 function setLocale(code) {
+  const wasDraft = window.SikaState.locale === 'gaa';
   window.SikaState.locale = code;
   try { localStorage.setItem(LOCALE_KEY, code); } catch {}
   renderAll();
+  const loc = LOCALES.find((l) => l.code === code);
+  if (loc && loc.draft && !wasDraft) toast(UI.gaDraftNote.en);
+}
+
+/* A persistent, always-English warning across every screen while an unverified
+   draft language is active — a warning about untrusted text must itself be in a
+   language the reader can trust. */
+function renderDraftRibbon() {
+  const el = $('#draft-ribbon');
+  if (!el) return;
+  const loc = LOCALES.find((l) => l.code === window.SikaState.locale);
+  if (loc && loc.draft) {
+    el.innerHTML = `${ico('warn', 'ic sm')} <span>${esc(UI.gaDraftNote.en)}</span>`;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+    el.innerHTML = '';
+  }
 }
 
 function renderLangSwitch() {
@@ -60,10 +79,7 @@ function setView(v) {
    CHECK
    ============================================================ */
 function renderCheck() {
-  const gaNote = window.SikaState.locale === 'gaa'
-    ? `<p class="ga-note">${ico('info')} ${esc(t(UI.gaDraftNote))}</p>` : '';
   $('#view-check').innerHTML = `
-    ${gaNote}
     <h1 class="h-title">${esc(t(UI.checkTitle))}</h1>
     <p class="h-sub">${esc(t(UI.checkSub))}</p>
     <textarea id="msg" class="msg" rows="4" placeholder="${esc(t(UI.pastePlaceholder))}"></textarea>
@@ -239,7 +255,7 @@ function renderReport() {
     <details class="server-ctl">
       <summary>${ico('globe')} Community server</summary>
       <div class="rf-inner">
-        <p class="muted small">Connect a shared SikaSafe server to look up and report scam numbers across the whole community. Leave blank to stay fully offline and private.</p>
+        <p class="muted small">Connect a shared SikaSafe server to look up and report scam numbers across the whole community. Leave blank to stay fully offline and private. <a class="lnk" href="privacy.html">${esc(t(UI.privacy))} →</a></p>
         <input id="srv-url" class="inp" inputmode="url" placeholder="https://your-sikasafe-server" value="${esc(api.base())}">
         <div class="row">
           <button id="srv-save" class="btn primary">Connect</button>
@@ -394,6 +410,7 @@ function renderHelp() {
     <div class="contacts">
       ${CONTACTS.map(contactCard).join('')}
     </div>
+    <p class="fineprint">${ico('lock')} <a class="lnk" href="privacy.html">${esc(t(UI.privacy))}</a> — what stays on your phone, what community mode sends, and what SikaSafe never does.</p>
     <p class="fineprint">${ico('info')} SikaSafe is an independent public-safety tool, not affiliated with any network, bank, or agency. Always verify contacts on your provider’s official materials.</p>`;
 }
 
@@ -430,6 +447,7 @@ function toast(msg) {
 /* ---------- boot ---------- */
 function renderAll() {
   renderLangSwitch();
+  renderDraftRibbon();
   const tag = $('#tagline');
   if (tag) tag.textContent = t(UI.tagline);
   document.querySelectorAll('.navbtn').forEach((b) => {

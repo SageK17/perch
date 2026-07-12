@@ -17,8 +17,10 @@
   Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
 
-# The service worker and entry page must revalidate so updates reach users fast.
+# The service worker and entry pages must revalidate so updates reach users fast.
 /sw.js
   Cache-Control: no-cache
 /index.html
+  Cache-Control: no-cache
+/privacy.html
   Cache-Control: no-cache
